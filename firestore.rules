@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow all authenticated users to read root-level symbols and colors
+    match /symbols/{symbolId} {
+      allow read: if request.auth != null;
+    }
+    match /colors/{colorId} {
+      allow read: if request.auth != null;
+    }
+
+    // User document rules
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      // Account subcollection rules
+      match /accounts/{accountId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+        
+        // Trade subcollection rules
+        match /trades/{tradeId} {
+          allow read, write: if request.auth != null && request.auth.uid == userId;
+        }
+
+        // Deleted trades subcollection rules
+        match /deletedTrades/{tradeId} {
+          allow read, write: if request.auth != null && request.auth.uid == userId;
+        }
+      }
+      
+      // Setup subcollection rules
+      match /setups/{setupId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+        
+        // Allow all subcollections and documents (including ruleGroups and rules)
+        match /{document=**} {
+          allow read, write: if request.auth != null && request.auth.uid == userId;
+        }
+      }
+      
+      // Journal entries subcollection
+      match /journal/{entryId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      
+      // Notes subcollection
+      match /notes/{noteId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Notebooks subcollection
+      match /notebooks/{notebookId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Journal notes subcollection
+      match /journalNotes/{noteId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+  }
+} 

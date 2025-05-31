@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "coredrift-3e106"
+  },
+  "targets": {
+    "coredrift-3e106": {
+      "hosting": {
+        "coredrift": [
+          "coredrift"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
