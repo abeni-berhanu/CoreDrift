@@ -23,6 +23,10 @@ import { AddTradeModalProvider } from "./contexts/AddTradeModalContext";
 import RecycleBin from "./components/RecycleBin";
 import { initializeSymbols } from "./services/SymbolService";
 import "./index.css";
+import Topbar from "./components/Topbar";
+import DeleteAccountModal from "./components/DeleteAccountModal";
+import { ThemeProvider } from "./contexts/ThemeContext";
+import { DateRangeProvider } from "./contexts/DateRangeContext";
 
 // Separate component for initialization
 function AppContent() {
@@ -127,15 +131,23 @@ function App() {
   return (
     <Router>
       <AuthProvider>
-        <SetupsProvider>
+        <ThemeProvider>
           <AccountProvider>
-            <TradeLogProvider>
-              <AddTradeModalProvider>
-                <AppContent />
-              </AddTradeModalProvider>
-            </TradeLogProvider>
+            <DateRangeProvider>
+              <SetupsProvider>
+                <TradeLogProvider>
+                  <AddTradeModalProvider>
+                    <div className="app">
+                      <Topbar />
+                      <AppContent />
+                      <DeleteAccountModal />
+                    </div>
+                  </AddTradeModalProvider>
+                </TradeLogProvider>
+              </SetupsProvider>
+            </DateRangeProvider>
           </AccountProvider>
-        </SetupsProvider>
+        </ThemeProvider>
       </AuthProvider>
     </Router>
   );

@@ -214,17 +214,24 @@ function TradeTable({
                     : idx % 2 === 0
                     ? "#fff"
                     : "#f9faff",
-                  transition: "background 0.15s",
+                  transition: "all 0.2s ease",
                 }}
                 onClick={onRowClick ? () => onRowClick(trade) : undefined}
                 onMouseEnter={(e) => {
-                  if (!selectedRows.includes(trade.id))
+                  if (!selectedRows.includes(trade.id)) {
                     e.currentTarget.style.background = "#f0f4ff";
+                    e.currentTarget.style.transform = "translateY(-1px)";
+                    e.currentTarget.style.boxShadow =
+                      "0 2px 4px rgba(0,0,0,0.05)";
+                  }
                 }}
                 onMouseLeave={(e) => {
-                  if (!selectedRows.includes(trade.id))
+                  if (!selectedRows.includes(trade.id)) {
                     e.currentTarget.style.background =
                       idx % 2 === 0 ? "#fff" : "#f9faff";
+                    e.currentTarget.style.transform = "translateY(0)";
+                    e.currentTarget.style.boxShadow = "none";
+                  }
                 }}
               >
                 {showCheckboxes && (

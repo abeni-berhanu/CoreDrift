@@ -162,8 +162,10 @@ function Setups() {
       (t) =>
         (Array.isArray(t.setups) && t.setups.includes(setup.id)) ||
         t.setups === setup.id ||
-        t.setups === setup.name
+        t.setups === setup.name ||
+        (Array.isArray(t.setupIds) && t.setupIds.includes(setup.id))
     );
+
     const tradesCount = setupTrades.length;
     const netPL = setupTrades.reduce(
       (sum, t) => sum + (Number(t.netPnL) || 0),
@@ -186,7 +188,14 @@ function Setups() {
       : grossProfit > 0
       ? Infinity
       : 0;
-    return { tradesCount, netPL, winRate, avgTrade, profitFactor };
+
+    return {
+      tradesCount,
+      netPL,
+      winRate,
+      avgTrade,
+      profitFactor,
+    };
   }
 
   return (
@@ -649,11 +658,36 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
     if (!renameValue.trim()) return;
     try {
       const setupRef = doc(db, `users/${user.uid}/setups/${setup.id}`);
-      await updateDoc(setupRef, { name: renameValue.trim() });
-      setRenaming(false);
+      await updateDoc(setupRef, {
+        name: renameValue.trim(),
+        updatedAt: serverTimestamp(),
+      });
       setLocalName(renameValue.trim()); // Optimistic update
+      setRenaming(false);
+      setShowMenu(false);
     } catch (err) {
-      // Optionally handle error
+      console.error("Error renaming setup:", err);
+      setError("Failed to rename setup");
+      setRenaming(false);
+    }
+  };
+
+  const handleStartRename = () => {
+    setRenameValue(setup.name);
+    setRenaming(true);
+    setShowMenu(false);
+  };
+
+  const handleCancelRename = () => {
+    setRenaming(false);
+    setRenameValue(setup.name);
+  };
+
+  const handleKeyPress = (e) => {
+    if (e.key === "Enter") {
+      handleRename();
+    } else if (e.key === "Escape") {
+      handleCancelRename();
     }
   };
 
@@ -707,34 +741,24 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
 
   useEffect(() => {
     if (!user || !setup?.id) return;
-    // Fetch all trades for this user and setup
-    const fetchTrades = async () => {
-      let trades = [];
-      // You may want to filter by account as well, or fetch all accounts
-      const accountsRef = collection(db, `users/${user.uid}/accounts`);
-      const accountsSnap = await getDocs(accountsRef);
-      for (const accDoc of accountsSnap.docs) {
-        const tradesRef = collection(
-          db,
-          `users/${user.uid}/accounts/${accDoc.id}/trades`
-        );
-        const tradesSnap = await getDocs(tradesRef);
-        trades.push(
-          ...tradesSnap.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-            accountId: accDoc.id,
-          }))
-        );
-      }
-      // Filter trades for this setup
-      trades = trades.filter(
-        (trade) => trade.setups === setup.id || trade.setups === setup.name
+    setLoadingTrades(true);
+    try {
+      // Filter trades for this setup from globalTrades
+      const setupTrades = globalTrades.filter(
+        (trade) =>
+          (Array.isArray(trade.setups) && trade.setups.includes(setup.id)) ||
+          trade.setups === setup.id ||
+          trade.setups === setup.name ||
+          (Array.isArray(trade.setupIds) && trade.setupIds.includes(setup.id))
       );
-      setExecutedTrades(trades);
-    };
-    fetchTrades();
-  }, [user, setup]);
+      setExecutedTrades(setupTrades);
+    } catch (err) {
+      console.error("Error filtering trades:", err);
+      setError("Failed to load trades");
+    } finally {
+      setLoadingTrades(false);
+    }
+  }, [user, setup, globalTrades]);
 
   // --- SUMMARY CALCULATION ---
   const totalTrades = executedTrades.length;
@@ -1142,9 +1166,29 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
             }}
           />
         </div>
-        <h3 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
-          {localName}
-        </h3>
+        {renaming ? (
+          <input
+            type="text"
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={handleKeyPress}
+            style={{
+              fontSize: 22,
+              fontWeight: 700,
+              border: "1px solid #ddd",
+              borderRadius: 4,
+              padding: "4px 8px",
+              outline: "none",
+              width: "auto",
+              minWidth: 200,
+            }}
+            autoFocus
+          />
+        ) : (
+          <h3 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
+            {localName}
+          </h3>
+        )}
         <div style={{ flex: 1 }} />
         {/* Three-dot menu */}
         <div style={{ position: "relative", marginRight: 8 }} ref={menuRef}>
@@ -1180,11 +1224,7 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
                   fontSize: 15,
                   cursor: "pointer",
                 }}
-                onClick={() => {
-                  setRenaming(true);
-                  setShowMenu(false);
-                  setColorPickerOpen(false);
-                }}
+                onClick={handleStartRename}
               >
                 Rename
               </button>

@@ -4,8 +4,8 @@ import {
   collection,
   query,
   where,
-  getDocs,
   onSnapshot,
+  orderBy,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
@@ -27,29 +27,30 @@ export function SetupsProvider({ children }) {
       return;
     }
 
-    const fetchSetups = async () => {
-      try {
-        console.log("Fetching setups for user:", user.uid);
-        const setupsRef = collection(db, `users/${user.uid}/setups`);
-        console.log("Setups ref path:", setupsRef.path);
+    setLoading(true);
+    const setupsRef = collection(db, `users/${user.uid}/setups`);
+    const q = query(setupsRef, orderBy("createdAt", "desc"));
 
-        const setupsSnap = await getDocs(setupsRef);
-        console.log("Number of setups found:", setupsSnap.size);
-
-        const setupsData = setupsSnap.docs.map((doc) => ({
+    // Set up real-time listener
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const setupsData = snapshot.docs.map((doc) => ({
           id: doc.id,
           ...doc.data(),
         }));
         setSetups(setupsData);
-      } catch (error) {
+        setLoading(false);
+      },
+      (error) => {
         console.error("Error fetching setups:", error);
         setSetups([]);
-      } finally {
         setLoading(false);
       }
-    };
+    );
 
-    fetchSetups();
+    // Cleanup subscription on unmount
+    return () => unsubscribe();
   }, [user]);
 
   const value = {

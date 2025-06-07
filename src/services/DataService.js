@@ -12,6 +12,7 @@ import {
   deleteDoc,
   updateDoc,
   addDoc,
+  orderBy,
 } from "firebase/firestore";
 
 class DataService {
@@ -22,88 +23,72 @@ class DataService {
   }
 
   // Initialize a new batch
-  startBatch() {
+  async startBatch() {
+    console.log("Starting new batch operation");
     this.batch = writeBatch(db);
     this.operations = [];
-    this.errorLog = [];
+    console.log("Batch initialized");
   }
 
   // Add operation to batch
   addOperation(operation) {
+    if (!this.batch) {
+      console.error("Attempted to add operation without starting batch");
+      throw new Error("Batch not started");
+    }
+    console.log("Adding operation to batch");
     this.operations.push(operation);
+    console.log(`Total operations in batch: ${this.operations.length}`);
   }
 
   // Log error
   logError(operation, error) {
-    this.errorLog.push({
+    const errorLog = {
       operation,
       error: error.message,
+      code: error.code,
       timestamp: new Date().toISOString(),
-    });
+    };
+    console.error(`Error in ${operation}:`, errorLog);
+    this.errorLog.push(errorLog);
   }
 
   // Commit batch with error handling and retry logic
-  async commitBatch(retryCount = 0, maxRetries = 3) {
+  async commitBatch() {
+    if (!this.batch) {
+      console.error("Attempted to commit without starting batch");
+      throw new Error("Batch not started");
+    }
+
     try {
-      if (!this.batch) {
-        throw new Error("No batch started");
-      }
+      console.log(`Executing ${this.operations.length} operations in batch`);
 
       // Execute all operations
-      for (const operation of this.operations) {
-        await operation(this.batch);
-      }
+      this.operations.forEach((operation, index) => {
+        console.log(
+          `Executing operation ${index + 1}/${this.operations.length}`
+        );
+        operation();
+      });
 
+      console.log("All operations executed, committing batch");
       // Commit the batch
       await this.batch.commit();
+      console.log("Batch committed successfully");
 
-      // Log successful operations
-      console.log(
-        "Batch committed successfully:",
-        this.operations.length,
-        "operations"
-      );
-
-      // Clear batch
+      // Reset batch and operations
       this.batch = null;
       this.operations = [];
+
       return true;
     } catch (error) {
-      console.error("Batch commit failed:", {
+      console.error("Error committing batch:", {
         error,
         code: error.code,
         message: error.message,
-        retryCount,
-        maxRetries,
+        stack: error.stack,
       });
-
-      // Check if we should retry
-      if (
-        retryCount < maxRetries &&
-        (error.code === "failed-precondition" ||
-          error.code === "unavailable" ||
-          error.code === "deadline-exceeded" ||
-          error.message.includes("Bad Request"))
-      ) {
-        console.log(
-          `Retrying batch commit (attempt ${
-            retryCount + 1
-          } of ${maxRetries})...`
-        );
-
-        // Create a new batch for retry
-        this.batch = writeBatch(db);
-
-        // Wait before retrying (exponential backoff)
-        await new Promise((resolve) =>
-          setTimeout(resolve, Math.pow(2, retryCount) * 1000)
-        );
-
-        // Retry the commit
-        return this.commitBatch(retryCount + 1, maxRetries);
-      }
-
-      this.logError("batch_commit", error);
+      this.logError("commit_batch", error);
       return false;
     }
   }
@@ -143,19 +128,23 @@ class DataService {
     }
   }
 
-  async softDeleteAccount(userId, accountId) {
+  async deleteAccount(userId, accountId) {
+    console.log("Starting account deletion:", { userId, accountId });
     try {
+      // Delete the account document - subcollections (trades) will be automatically deleted
       const accountRef = doc(db, `users/${userId}/accounts/${accountId}`);
-      this.addOperation(() =>
-        this.batch.update(accountRef, {
-          isDeleted: true,
-          deletedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        })
-      );
-    } catch (error) {
-      this.logError("soft_delete_account", error);
-      throw error;
+      console.log("Deleting account document:", accountRef.path);
+      await deleteDoc(accountRef);
+      console.log("Account document deleted successfully");
+      return true;
+    } catch (err) {
+      console.error("Error deleting account:", {
+        error: err,
+        code: err.code,
+        message: err.message,
+        stack: err.stack,
+      });
+      throw err;
     }
   }
 
@@ -165,13 +154,62 @@ class DataService {
       const tradeRef = doc(
         collection(db, `users/${userId}/accounts/${accountId}/trades`)
       );
-      const tradeWithMetadata = {
+
+      // Convert numeric fields to numbers
+      const numericFields = [
+        "entryPrice",
+        "exitPrice",
+        "sl",
+        "riskAmount",
+        "commission",
+        "swap",
+        "netPnL",
+        "duration",
+        "riskToReward",
+        "percentRisk",
+        "percentPnL",
+        "maxDrawdownR",
+        "maxRR",
+        "volume",
+      ];
+
+      const processedTradeData = {
         ...tradeData,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         isDeleted: false,
       };
-      this.addOperation(() => this.batch.set(tradeRef, tradeWithMetadata));
+
+      // Convert all numeric fields
+      numericFields.forEach((field) => {
+        if (
+          processedTradeData[field] !== undefined &&
+          processedTradeData[field] !== null &&
+          processedTradeData[field] !== ""
+        ) {
+          processedTradeData[field] = Number(processedTradeData[field]);
+        }
+      });
+
+      this.addOperation(() => this.batch.set(tradeRef, processedTradeData));
+
+      // Update account current balance
+      const accountRef = doc(db, `users/${userId}/accounts/${accountId}`);
+      const accountDoc = await getDoc(accountRef);
+      if (accountDoc.exists()) {
+        const account = accountDoc.data();
+        const newBalance =
+          (account.currentBalance || account.initialBalance) +
+          (Number(processedTradeData.netPnL) || 0);
+
+        this.addOperation(() =>
+          this.batch.update(accountRef, {
+            currentBalance: newBalance,
+            updatedAt: serverTimestamp(),
+          })
+        );
+      }
+
       return tradeRef.id;
     } catch (error) {
       this.logError("create_trade", error);
@@ -185,97 +223,113 @@ class DataService {
         db,
         `users/${userId}/accounts/${accountId}/trades/${tradeId}`
       );
-      const tradeWithMetadata = {
+      const oldTradeDoc = await getDoc(tradeRef);
+
+      if (!oldTradeDoc.exists()) {
+        throw new Error("Trade not found");
+      }
+
+      const oldTrade = oldTradeDoc.data();
+
+      // Convert numeric fields to numbers
+      const numericFields = [
+        "entryPrice",
+        "exitPrice",
+        "sl",
+        "riskAmount",
+        "commission",
+        "swap",
+        "netPnL",
+        "duration",
+        "riskToReward",
+        "percentRisk",
+        "percentPnL",
+        "maxDrawdownR",
+        "maxRR",
+        "volume",
+      ];
+
+      const processedTradeData = {
         ...tradeData,
         updatedAt: serverTimestamp(),
       };
-      this.addOperation(() => this.batch.update(tradeRef, tradeWithMetadata));
+
+      // Convert all numeric fields
+      numericFields.forEach((field) => {
+        if (
+          processedTradeData[field] !== undefined &&
+          processedTradeData[field] !== null &&
+          processedTradeData[field] !== ""
+        ) {
+          processedTradeData[field] = Number(processedTradeData[field]);
+        }
+      });
+
+      this.addOperation(() => this.batch.update(tradeRef, processedTradeData));
+
+      // Update account current balance
+      const accountRef = doc(db, `users/${userId}/accounts/${accountId}`);
+      const accountDoc = await getDoc(accountRef);
+      if (accountDoc.exists()) {
+        const account = accountDoc.data();
+        const oldPnL = Number(oldTrade.netPnL) || 0;
+        const newPnL = Number(processedTradeData.netPnL) || 0;
+        const balanceDiff = newPnL - oldPnL;
+        const newBalance =
+          (account.currentBalance || account.initialBalance) + balanceDiff;
+
+        this.addOperation(() =>
+          this.batch.update(accountRef, {
+            currentBalance: newBalance,
+            updatedAt: serverTimestamp(),
+          })
+        );
+      }
     } catch (error) {
       this.logError("update_trade", error);
       throw error;
     }
   }
 
-  async softDeleteTrade(userId, accountId, tradeId) {
+  async deleteTrade(userId, accountId, tradeId) {
     try {
-      console.log("Starting soft delete for trade:", {
-        userId,
-        accountId,
-        tradeId,
-      });
-
-      if (!this.batch) {
-        throw new Error("No batch started. Call startBatch() first.");
-      }
-
       const tradeRef = doc(
         db,
         `users/${userId}/accounts/${accountId}/trades/${tradeId}`
       );
-      const deletedTradesCollection = collection(
-        db,
-        `users/${userId}/accounts/${accountId}/deletedTrades`
-      );
-      const deletedTradeRef = doc(deletedTradesCollection);
-
-      // Get the trade data
-      console.log("Fetching trade data...");
       const tradeDoc = await getDoc(tradeRef);
+
       if (!tradeDoc.exists()) {
-        console.error("Trade not found:", tradeId);
         throw new Error("Trade not found");
       }
 
-      const tradeData = tradeDoc.data();
-      console.log("Trade data fetched successfully");
-
-      // Validate trade data
-      if (!tradeData) {
-        throw new Error("Invalid trade data");
-      }
-
-      // Add to deleted trades collection
-      const deletedTradeData = {
-        ...tradeData,
-        deletedAt: serverTimestamp(),
-        originalId: tradeId,
-        deletedBy: userId,
-      };
-      console.log("Adding to deleted trades collection...", {
-        path: deletedTradeRef.path,
-        data: deletedTradeData,
-      });
+      const trade = tradeDoc.data();
       this.addOperation(() =>
-        this.batch.set(deletedTradeRef, deletedTradeData)
+        this.batch.update(tradeRef, {
+          isDeleted: true,
+          deletedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
       );
 
-      // Remove from original collection
-      console.log("Removing from original collection...", {
-        path: tradeRef.path,
-      });
-      this.addOperation(() => this.batch.delete(tradeRef));
+      // Update account current balance
+      const accountRef = doc(db, `users/${userId}/accounts/${accountId}`);
+      const accountDoc = await getDoc(accountRef);
+      if (accountDoc.exists()) {
+        const account = accountDoc.data();
+        const newBalance =
+          (account.currentBalance || account.initialBalance) -
+          (Number(trade.netPnL) || 0);
 
-      // Log all batch operations before commit
-      console.log("Batch operations prepared:", {
-        userId,
-        accountId,
-        tradeId,
-        deletePath: tradeRef.path,
-        addPath: deletedTradeRef.path,
-        addData: deletedTradeData,
-      });
-
-      console.log("Soft delete operations added to batch successfully");
+        this.addOperation(() =>
+          this.batch.update(accountRef, {
+            currentBalance: newBalance,
+            updatedAt: serverTimestamp(),
+          })
+        );
+      }
     } catch (error) {
-      console.error("Error in softDeleteTrade:", {
-        error,
-        code: error.code,
-        message: error.message,
-        userId,
-        accountId,
-        tradeId,
-      });
-      this.logError("soft_delete_trade", error);
+      this.logError("delete_trade", error);
       throw error;
     }
   }
@@ -414,45 +468,6 @@ class DataService {
     }
   }
 
-  // Recovery Operations
-  async recoverDeletedTrade(userId, accountId, deletedTradeId) {
-    try {
-      const deletedTradeRef = doc(
-        db,
-        `users/${userId}/accounts/${accountId}/deletedTrades/${deletedTradeId}`
-      );
-      const deletedTradeDoc = await getDoc(deletedTradeRef);
-
-      if (!deletedTradeDoc.exists()) {
-        throw new Error("Deleted trade not found");
-      }
-
-      const deletedTradeData = deletedTradeDoc.data();
-      const originalId = deletedTradeData.originalId;
-
-      // Restore to original collection
-      const tradeRef = doc(
-        db,
-        `users/${userId}/accounts/${accountId}/trades/${originalId}`
-      );
-      this.addOperation(() =>
-        this.batch.set(tradeRef, {
-          ...deletedTradeData,
-          isDeleted: false,
-          deletedAt: null,
-          updatedAt: serverTimestamp(),
-          recoveredAt: serverTimestamp(),
-        })
-      );
-
-      // Remove from deleted trades
-      this.addOperation(() => this.batch.delete(deletedTradeRef));
-    } catch (error) {
-      this.logError("recover_trade", error);
-      throw error;
-    }
-  }
-
   // Get error log
   getErrorLog() {
     return this.errorLog;
@@ -461,6 +476,58 @@ class DataService {
   // Clear error log
   clearErrorLog() {
     this.errorLog = [];
+  }
+
+  async initializeAccountBalances(userId) {
+    try {
+      // Get all accounts for the user
+      const accountsRef = collection(db, `users/${userId}/accounts`);
+      const accountsSnapshot = await getDocs(accountsRef);
+
+      for (const accountDoc of accountsSnapshot.docs) {
+        const account = accountDoc.data();
+
+        // Skip if account already has currentBalance
+        if (account.currentBalance !== undefined) continue;
+
+        // Get all trades for this account (including deleted ones for historical accuracy)
+        const tradesQuery = query(
+          collection(db, `users/${userId}/accounts/${accountDoc.id}/trades`),
+          orderBy("entryTimestamp", "asc") // Get trades in chronological order
+        );
+        const tradesSnapshot = await getDocs(tradesQuery);
+
+        // Calculate total PnL from all trades
+        let totalPnL = 0;
+        tradesSnapshot.docs.forEach((doc) => {
+          const trade = doc.data();
+          // Only add PnL if the trade is not deleted
+          if (!trade.isDeleted) {
+            totalPnL += Number(trade.netPnL) || 0;
+          }
+        });
+
+        // Set currentBalance to initialBalance + totalPnL
+        const newBalance = (account.initialBalance || 0) + totalPnL;
+
+        console.log(`Initializing balance for account ${accountDoc.id}:`, {
+          initialBalance: account.initialBalance,
+          totalPnL,
+          newBalance,
+          tradeCount: tradesSnapshot.docs.length,
+        });
+
+        // Update the account
+        const accountRef = doc(db, `users/${userId}/accounts/${accountDoc.id}`);
+        await updateDoc(accountRef, {
+          currentBalance: newBalance,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (error) {
+      this.logError("initialize_account_balances", error);
+      throw error;
+    }
   }
 }
 

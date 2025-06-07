@@ -40,11 +40,35 @@ export const useDataManagement = () => {
       setIsLoading(true);
       setError(null);
       try {
+        console.log("Starting trade update process:", {
+          accountId,
+          tradeId,
+          tradeData,
+        });
+
         await dataService.startBatch();
+        console.log("Batch started");
+
         await dataService.updateTrade(user.uid, accountId, tradeId, tradeData);
+        console.log("Trade update operation added to batch");
+
         const success = await dataService.commitBatch();
-        if (!success) throw new Error("Failed to commit trade update");
+        console.log("Batch commit result:", success);
+
+        if (!success) {
+          console.error("Batch commit failed");
+          throw new Error("Failed to commit trade update");
+        }
+
+        console.log("Trade update completed successfully");
       } catch (err) {
+        console.error("Error in updateTrade:", {
+          error: err,
+          code: err.code,
+          message: err.message,
+          accountId,
+          tradeId,
+        });
         setError(err.message);
         throw err;
       } finally {
@@ -64,8 +88,8 @@ export const useDataManagement = () => {
         await dataService.startBatch();
         console.log("Batch started");
 
-        await dataService.softDeleteTrade(user.uid, accountId, tradeId);
-        console.log("Soft delete operation added to batch");
+        await dataService.deleteTrade(user.uid, accountId, tradeId);
+        console.log("Delete operation added to batch");
 
         const success = await dataService.commitBatch();
         console.log("Batch commit result:", success);

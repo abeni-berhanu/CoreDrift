@@ -24,32 +24,31 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
+  const [error, setError] = useState(null);
 
   // Set up auth state listener
   useEffect(() => {
     console.log("Setting up auth state listener...");
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      console.log(
-        "Auth state changed:",
-        firebaseUser ? "User logged in" : "No user"
-      );
-      if (firebaseUser) {
-        console.log("Firebase user details:", {
-          uid: firebaseUser.uid,
-          email: firebaseUser.email,
-          emailVerified: firebaseUser.emailVerified,
-          isAnonymous: firebaseUser.isAnonymous,
-          metadata: firebaseUser.metadata,
-        });
-        setUser({
-          uid: firebaseUser.uid,
-          email: firebaseUser.email,
-        });
-      } else {
-        setUser(null);
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        console.log("Auth state changed:", user ? "User logged in" : "No user");
+        if (user) {
+          console.log("User details:", {
+            uid: user.uid,
+            email: user.email,
+            emailVerified: user.emailVerified,
+          });
+        }
+        setUser(user);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Auth state change error:", error);
+        setError(error.message);
+        setLoading(false);
       }
-      setLoading(false);
-    });
+    );
 
     return () => unsubscribe();
   }, []);

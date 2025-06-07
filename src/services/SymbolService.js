@@ -23,21 +23,25 @@ export const initializeSymbols = async () => {
           id: "EURUSD",
           pipSize: 0.0001,
           pipValuePerLot: 10,
+          contractSize: 100000,
         },
         {
           id: "XAUUSD",
           pipSize: 0.1,
           pipValuePerLot: 10,
+          contractSize: 100,
         },
         {
           id: "NASDAQ",
           pipSize: 1,
           pipValuePerLot: 1,
+          contractSize: 1,
         },
         {
           id: "BTCUSD",
           pipSize: 1,
           pipValuePerLot: 1,
+          contractSize: 1,
         },
       ];
 

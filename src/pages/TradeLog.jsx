@@ -648,6 +648,14 @@ function TradeLog() {
                   normalizedSymbol = "XAUUSD";
                 } else if (symbol.startsWith("EURUSD")) {
                   normalizedSymbol = "EURUSD";
+                } else if (
+                  symbol.startsWith("NASDAQ") ||
+                  symbol.startsWith("NAS100") ||
+                  symbol.startsWith("US100")
+                ) {
+                  normalizedSymbol = "NASDAQ";
+                } else if (symbol.startsWith("GBPJPY")) {
+                  normalizedSymbol = "GBPJPY";
                 }
               }
 
@@ -808,6 +816,10 @@ function TradeLog() {
       return;
     }
 
+    // Clear existing trades when account selection changes
+    setTrades([]);
+    setGlobalTrades([]);
+
     accountIdsToFetch.forEach((accountId) => {
       const tradesPath = `users/${user.uid}/accounts/${accountId}/trades`;
       let tradesQuery = query(collection(db, tradesPath));
@@ -851,19 +863,37 @@ function TradeLog() {
           }));
 
           setTrades((prevTrades) => {
-            const otherAccountTrades = prevTrades.filter(
-              (t) => t.accountId !== accountId
+            // Remove trades from accounts that are no longer selected
+            const filteredPrevTrades = prevTrades.filter((t) =>
+              accountIdsToFetch.includes(t.accountId)
             );
-            const combined = [...otherAccountTrades, ...accountTrades];
+
+            // Add new trades from this account
+            const combined = [...filteredPrevTrades, ...accountTrades];
+
+            // Sort by timestamp
             combined.sort((a, b) => {
               const timeA = a.entryTimestamp?.toMillis
                 ? a.entryTimestamp.toMillis()
+                : a.entryTimestamp?.toDate
+                ? a.entryTimestamp.toDate().getTime()
+                : a.entryTimestamp instanceof Date
+                ? a.entryTimestamp.getTime()
+                : typeof a.entryTimestamp === "string"
+                ? new Date(a.entryTimestamp).getTime()
                 : 0;
               const timeB = b.entryTimestamp?.toMillis
                 ? b.entryTimestamp.toMillis()
+                : b.entryTimestamp?.toDate
+                ? b.entryTimestamp.toDate().getTime()
+                : b.entryTimestamp instanceof Date
+                ? b.entryTimestamp.getTime()
+                : typeof b.entryTimestamp === "string"
+                ? new Date(b.entryTimestamp).getTime()
                 : 0;
               return timeB - timeA;
             });
+
             setGlobalTrades(combined); // Update global trades
             return combined;
           });
@@ -1130,43 +1160,20 @@ function TradeLog() {
   const [isPreviewMode, setIsPreviewMode] = useState(false);
 
   // Open detail modal (view or edit)
-  const openTradeDetail = (trade) => {
-    try {
-      if (!user || !user.email) {
-        console.error("User not authenticated when opening trade detail");
-        alert("You must be logged in to view trade details");
-        return;
-      }
+  const handleTradeClick = (trade) => {
+    // Get the account's initial balance
+    const account = accounts.find((acc) => acc.id === trade.accountId);
+    const initialBalance = account ? Number(account.initialBalance) : null;
 
-      if (!trade || !trade.id || !trade.accountId) {
-        console.error("Invalid trade data:", trade);
-        alert("Invalid trade data");
-        return;
-      }
-
-      console.log("Opening trade detail:", {
-        tradeId: trade.id,
-        accountId: trade.accountId,
-        userId: user.uid,
-      });
-
-      // Convert timestamps to Date objects
-      const tradeWithDates = {
-        ...trade,
-        entryTimestamp: trade.entryTimestamp?.toDate
-          ? trade.entryTimestamp.toDate()
-          : new Date(trade.entryTimestamp),
-        exitTimestamp: trade.exitTimestamp?.toDate
-          ? trade.exitTimestamp.toDate()
-          : new Date(trade.exitTimestamp),
-      };
-
-      setDetailTrade(tradeWithDates);
-      setShowTradeDetail(true);
-    } catch (err) {
-      console.error("Error opening trade detail:", err);
-      alert("Error opening trade details: " + err.message);
+    if (!initialBalance) {
+      console.error("No initial balance found for account:", trade.accountId);
+      return;
     }
+
+    // Recalculate trade fields with the correct initial balance
+    const recalculatedTrade = recalculateTradeFields(trade, initialBalance);
+    setDetailTrade(recalculatedTrade);
+    setShowTradeDetail(true);
   };
 
   // Image upload handler
@@ -1572,7 +1579,7 @@ function TradeLog() {
         setups: selectedTrades[0].setups,
         pipValuePerLot: symbolSettings.pipValuePerLot,
         pipSize: symbolSettings.pipSize,
-        contractSize: symbolSettings.contractSize,
+        contractSize: symbolSettings.contractSize || 100000, // Default to 100000 if not set
       };
 
       // Use recalculateTradeFields to calculate all derived values
@@ -1787,7 +1794,7 @@ function TradeLog() {
               onSelectRow={handleTableTradeSelect}
               showCheckboxes={true}
               loading={loading}
-              onRowClick={openTradeDetail}
+              onRowClick={handleTradeClick}
               defaultVisibleColumns={defaultVisibleColumns}
             />
           )}
@@ -1913,6 +1920,7 @@ function TradeLog() {
                         e.stopPropagation();
                         handleToggleTrade(idx);
                       }}
+                      onClick={(e) => e.stopPropagation()}
                     />
                   </td>
                   <td style={tdStyle}>
@@ -2055,34 +2063,84 @@ function TradeLog() {
               margin: "auto",
               borderRadius: 12,
               padding: 32,
+              background: "#fff",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
             },
           }}
           ariaHideApp={false}
         >
-          <h2>Select Account for Import</h2>
-          <div style={{ marginBottom: 16 }}>
+          <h2 style={{ marginBottom: 24, color: "#333" }}>
+            Select Account for Import
+          </h2>
+          <div style={{ marginBottom: 24 }}>
             {accounts.map((acc) => (
-              <label key={acc.id} style={{ display: "block", marginBottom: 8 }}>
+              <label
+                key={acc.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  padding: "12px 16px",
+                  marginBottom: 8,
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  transition: "all 0.2s ease",
+                  background:
+                    selectedAccountsForUpload[0] === acc.id
+                      ? "#f0f4ff"
+                      : "#fff",
+                  border: "1px solid #e0e0e0",
+                  ":hover": {
+                    background: "#f5f7ff",
+                    borderColor: "#6C63FF",
+                  },
+                }}
+              >
                 <input
                   type="radio"
                   name="importAccount"
                   checked={selectedAccountsForUpload[0] === acc.id}
                   onChange={() => setSelectedAccountsForUpload([acc.id])}
+                  style={{ marginRight: 12 }}
                 />
-                {acc.name}
+                <span style={{ fontSize: 15, color: "#333" }}>{acc.name}</span>
               </label>
             ))}
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
             <button
               onClick={() => setShowAccountSelectModal(false)}
-              style={buttonStyle}
+              style={{
+                padding: "10px 20px",
+                borderRadius: 8,
+                border: "1px solid #e0e0e0",
+                background: "#fff",
+                color: "#666",
+                cursor: "pointer",
+                fontSize: 14,
+                transition: "all 0.2s ease",
+                ":hover": {
+                  background: "#f5f5f5",
+                },
+              }}
             >
               Cancel
             </button>
             <button
               onClick={handleConfirmAccountSelect}
-              style={{ ...buttonStyle, background: "#6C63FF", color: "#fff" }}
+              style={{
+                padding: "10px 20px",
+                borderRadius: 8,
+                border: "none",
+                background: "#6C63FF",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 14,
+                transition: "all 0.2s ease",
+                opacity: selectedAccountsForUpload[0] ? 1 : 0.6,
+                ":hover": {
+                  background: "#5a52d5",
+                },
+              }}
               disabled={!selectedAccountsForUpload[0]}
             >
               Confirm

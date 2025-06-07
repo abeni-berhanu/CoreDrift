@@ -11,6 +11,8 @@ import {
 } from "react-icons/fa";
 import { NotesModal, storeNotes, fetchNotes } from "./Notes";
 import { useAuth } from "../contexts/AuthContext";
+import { useAccount } from "../contexts/AccountContext";
+import { useSetups } from "../contexts/SetupsContext";
 import {
   doc,
   updateDoc,
@@ -111,7 +113,13 @@ function TradeModal({
   const [trade, setTrade] = useState(initialTrade || {});
   const [showNotesModal, setShowNotesModal] = useState(false);
   const { user } = useAuth();
-  const { updateTrade, isLoading: isUpdating } = useDataManagement();
+  const { accounts: authAccounts } = useAccount();
+  const { setups: authSetups } = useSetups();
+  const {
+    updateTrade,
+    isLoading: isUpdating,
+    createTrade,
+  } = useDataManagement();
   const [imageUploading, setImageUploading] = useState(false);
   const fileInputRef = React.useRef(null);
   const [showNotesCard, setShowNotesCard] = useState(false);
@@ -337,16 +345,43 @@ function TradeModal({
       }
     }
 
-    const recalculatedTrade = recalculateTradeFields(updatedTrade);
+    // Get the account's initial balance
+    const account = accounts.find((acc) => acc.id === trade.accountId);
+    const initialBalance = account ? Number(account.initialBalance) : null;
+
+    if (!initialBalance) {
+      console.error("No initial balance found for account:", trade.accountId);
+      return;
+    }
+
+    const recalculatedTrade = recalculateTradeFields(
+      updatedTrade,
+      initialBalance
+    );
     setTrade(recalculatedTrade);
     onChange && onChange(recalculatedTrade);
   };
+
   const handleDateChange = (field, date) => {
     const updatedTrade = { ...trade, [field]: date };
-    const recalculatedTrade = recalculateTradeFields(updatedTrade);
+
+    // Get the account's initial balance
+    const account = accounts.find((acc) => acc.id === trade.accountId);
+    const initialBalance = account ? Number(account.initialBalance) : null;
+
+    if (!initialBalance) {
+      console.error("No initial balance found for account:", trade.accountId);
+      return;
+    }
+
+    const recalculatedTrade = recalculateTradeFields(
+      updatedTrade,
+      initialBalance
+    );
     setTrade(recalculatedTrade);
     onChange && onChange(recalculatedTrade);
   };
+
   const handleNotesChange = async (val) => {
     if (user && trade.id) {
       await storeNotes(user.uid, trade.id, val);
@@ -380,10 +415,7 @@ function TradeModal({
         // Add new trade
         const newTrade = {
           ...trade,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          userId: user.uid,
-          accountId: trade.accountId || accounts[0]?.id,
+          accountId: trade.accountId || authAccounts[0]?.id,
           isDeleted: false,
         };
 
@@ -394,35 +426,13 @@ function TradeModal({
           isDeleted: newTrade.isDeleted,
         });
 
-        // Add to Firestore under the correct path
-        const tradesRef = collection(
-          db,
-          `users/${user.uid}/accounts/${newTrade.accountId}/trades`
-        );
-        const docRef = await addDoc(tradesRef, newTrade);
-
-        // Update the trade with the new ID
-        newTrade.id = docRef.id;
+        await createTrade(newTrade.accountId, newTrade);
         alert("Trade added successfully!");
       }
       setEditMode(false);
     } catch (err) {
       console.error("Error saving trade:", err);
-      if (err.code === "permission-denied") {
-        console.error("Permission denied details:", {
-          error: err,
-          user: user?.uid,
-          trade: trade?.id,
-          account: trade?.accountId,
-          path: `users/${user?.uid}/accounts/${trade?.accountId}/trades/${trade?.id}`,
-          isDeleted: trade?.isDeleted,
-        });
-        alert(
-          "Permission denied. Please check if you have the right access to this trade."
-        );
-      } else {
-        alert("Error saving trade: " + err.message);
-      }
+      alert("Error saving trade: " + err.message);
     }
   };
   const handleCancel = () => {
@@ -439,10 +449,10 @@ function TradeModal({
 
   // Helper for account name
   const getAccountName = (accountId) =>
-    accounts.find((a) => a.id === accountId)?.name || "";
+    authAccounts.find((a) => a.id === accountId)?.name || "";
   // Helper to get setup name by id
   const getSetupName = (setupId) =>
-    setups.find((s) => s.id === setupId)?.name || setupId;
+    authSetups.find((s) => s.id === setupId)?.name || setupId;
 
   // Image upload handler
   const handleImageUpload = async (e) => {
@@ -503,7 +513,7 @@ function TradeModal({
     setRulesLoading(true);
     try {
       // Find the setup object
-      const setupObj = setups.find((s) => s.id === setupId);
+      const setupObj = authSetups.find((s) => s.id === setupId);
       if (!setupObj) {
         setRules([]);
         setRulesLoading(false);
@@ -1004,7 +1014,7 @@ function TradeModal({
                         target: { name: "setups", value: option?.value },
                       });
                     }}
-                    options={setups.map((setup) => ({
+                    options={authSetups.map((setup) => ({
                       label: setup.name,
                       value: setup.id,
                     }))}
@@ -1209,7 +1219,7 @@ function TradeModal({
                         target: { name: "accountId", value: option?.value },
                       })
                     }
-                    options={accounts.map((account) => ({
+                    options={authAccounts.map((account) => ({
                       label: account.name,
                       value: account.id,
                     }))}

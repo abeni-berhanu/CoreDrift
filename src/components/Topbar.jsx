@@ -5,13 +5,22 @@ import {
   FaFilter,
   FaUser,
   FaCog,
+  FaTrash,
 } from "react-icons/fa";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { useDateRange } from "../contexts/DateRangeContext";
 import { useAccount } from "../contexts/AccountContext";
 import { db } from "../firebase";
-import { doc, updateDoc } from "firebase/firestore";
+import {
+  doc,
+  updateDoc,
+  serverTimestamp,
+  collection,
+  getDocs,
+} from "firebase/firestore";
+import { Link } from "react-router-dom";
+import AccountTypeSelect from "./AccountTypeSelect";
 
 const pageNames = {
   "/": "Dashboard",
@@ -35,8 +44,9 @@ function Topbar({ collapsed }) {
     selectedAccounts,
     toggleAccountSelection,
     addAccount,
-    removeAccount,
+    deleteAccount,
     setSelectedAccountIds,
+    selectedAccount,
   } = useAccount();
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef(null);
@@ -58,9 +68,18 @@ function Topbar({ collapsed }) {
     id: "",
     name: "",
     initialBalance: "",
+    currentBalance: "",
     accountType: "Demo",
   });
+  const [error, setError] = useState("");
   const pageName = pageNames[location.pathname] || "Dashboard";
+  const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [accountData, setAccountData] = useState({
+    name: "",
+    initialBalance: 100000,
+    currency: "USD",
+  });
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -123,33 +142,154 @@ function Topbar({ collapsed }) {
     }
   };
 
-  const handleOpenAccountSettings = (acc) => {
+  const handleOpenAccountSettings = (account) => {
     setAccountSettings({
-      id: acc.id,
-      name: acc.name,
-      initialBalance: acc.initialBalance || "",
-      accountType: acc.accountType || "Demo",
+      id: account.id,
+      name: account.name,
+      initialBalance: account.initialBalance || 0,
+      currentBalance: account.currentBalance || 0,
+      accountType: account.accountType || "Demo",
     });
     setShowAccountSettingsModal(true);
   };
 
+  const handleDeleteAccount = (accountId) => {
+    console.log("handleDeleteAccount called with:", accountId);
+    setShowAccountSettingsModal(false); // Close settings modal
+    deleteAccount(accountId); // This will trigger the confirmation modal
+  };
+
   const handleAccountSettingsChange = (e) => {
     const { name, value } = e.target;
-    setAccountSettings((prev) => ({ ...prev, [name]: value }));
+    setAccountSettings((prev) => ({
+      ...prev,
+      [name]: name === "initialBalance" ? Number(value) || 0 : value,
+    }));
+  };
+
+  const handleRecalculateBalance = async () => {
+    if (!accountSettings.id) return;
+    try {
+      const tradesRef = collection(
+        db,
+        "users",
+        user.uid,
+        "accounts",
+        accountSettings.id,
+        "trades"
+      );
+      const tradesSnapshot = await getDocs(tradesRef);
+      const trades = tradesSnapshot.docs.map((doc) => doc.data());
+
+      // Calculate total PnL from trades
+      const totalPnL = trades.reduce(
+        (sum, trade) => sum + (parseFloat(trade.netPnL) || 0),
+        0
+      );
+
+      // Update current balance based on initial balance and total PnL
+      const newCurrentBalance = accountSettings.initialBalance + totalPnL;
+
+      // Update the account document
+      const accRef = doc(db, "users", user.uid, "accounts", accountSettings.id);
+      await updateDoc(accRef, {
+        currentBalance: newCurrentBalance,
+        updatedAt: serverTimestamp(),
+      });
+
+      // Update local state
+      setAccountSettings((prev) => ({
+        ...prev,
+        currentBalance: newCurrentBalance,
+      }));
+
+      setError("");
+    } catch (err) {
+      console.error("Error recalculating balance:", err);
+      setError("Failed to recalculate balance");
+    }
   };
 
   const handleSaveAccountSettings = async () => {
     if (!accountSettings.id) return;
     try {
       const accRef = doc(db, "users", user.uid, "accounts", accountSettings.id);
-      await updateDoc(accRef, {
-        initialBalance: Number(accountSettings.initialBalance),
+      const initialBalance = Number(accountSettings.initialBalance) || 0;
+
+      if (initialBalance <= 0) {
+        throw new Error("Initial balance must be a positive number");
+      }
+
+      const updateData = {
+        name: accountSettings.name,
+        initialBalance: initialBalance,
         accountType: accountSettings.accountType,
-      });
+        updatedAt: serverTimestamp(),
+      };
+
+      console.log("Updating account with data:", updateData);
+      await updateDoc(accRef, updateData);
+      console.log("Account updated successfully");
+
       setShowAccountSettingsModal(false);
+      setError("");
     } catch (err) {
-      alert("Error saving account settings: " + err.message);
+      console.error("Error updating account:", err);
+      setError(err.message);
     }
+  };
+
+  const handleAddAccount = async () => {
+    try {
+      setError("");
+      if (!newAccount.name.trim()) {
+        throw new Error("Account name is required");
+      }
+
+      const initialBalance = Number(newAccount.initialBalance) || 0;
+      if (initialBalance <= 0) {
+        throw new Error("Initial balance must be a positive number");
+      }
+
+      await addAccount({
+        name: newAccount.name.trim(),
+        initialBalance: initialBalance,
+        currentBalance: initialBalance, // Set current balance equal to initial balance
+        accountType: newAccount.accountType || "Demo",
+      });
+
+      setNewAccount({
+        name: "",
+        initialBalance: 100000,
+        accountType: "Demo",
+      });
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const renderAccountInfo = () => {
+    if (!selectedAccount) return null;
+
+    return (
+      <div className="flex items-center space-x-4">
+        <div className="text-sm">
+          <span className="text-gray-500">Initial Balance:</span>
+          <span className="ml-2 font-medium">
+            {selectedAccount.initialBalance?.toLocaleString() || "0"}{" "}
+            {selectedAccount.currency || "USD"}
+          </span>
+        </div>
+        <div className="text-sm">
+          <span className="text-gray-500">Current Balance:</span>
+          <span className="ml-2 font-medium">
+            {selectedAccount.currentBalance?.toLocaleString() || "0"}{" "}
+            {selectedAccount.currency || "USD"}
+          </span>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -474,7 +614,7 @@ function Topbar({ collapsed }) {
                   background: "#fff",
                   borderRadius: 12,
                   padding: 32,
-                  minWidth: 320,
+                  minWidth: 400,
                   boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
                   position: "relative",
                 }}
@@ -484,7 +624,28 @@ function Topbar({ collapsed }) {
                 >
                   Account Management
                 </div>
-                <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                {error && (
+                  <div
+                    style={{
+                      color: "#cf1322",
+                      marginBottom: 16,
+                      padding: 8,
+                      background: "#fff1f0",
+                      border: "1px solid #ffccc7",
+                      borderRadius: 4,
+                    }}
+                  >
+                    {error}
+                  </div>
+                )}
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 16,
+                    marginBottom: 24,
+                  }}
+                >
                   <input
                     value={newAccount.name}
                     onChange={(e) =>
@@ -495,24 +656,43 @@ function Topbar({ collapsed }) {
                     }
                     placeholder="New account name"
                     style={{
-                      flex: 1,
                       padding: 8,
                       borderRadius: 6,
                       border: "1px solid #eee",
                       fontSize: 15,
                     }}
                   />
-                  <button
-                    onClick={() => {
-                      if (newAccount.name.trim()) {
-                        addAccount(newAccount.name.trim());
-                        setNewAccount({
-                          name: "",
-                          initialBalance: 100000,
-                          accountType: "Demo",
-                        });
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      type="number"
+                      value={newAccount.initialBalance}
+                      onChange={(e) =>
+                        setNewAccount((prev) => ({
+                          ...prev,
+                          initialBalance: Number(e.target.value),
+                        }))
                       }
-                    }}
+                      placeholder="Initial balance"
+                      style={{
+                        flex: 1,
+                        padding: 8,
+                        borderRadius: 6,
+                        border: "1px solid #eee",
+                        fontSize: 15,
+                      }}
+                    />
+                    <AccountTypeSelect
+                      value={newAccount.accountType}
+                      onChange={(e) =>
+                        setNewAccount({
+                          ...newAccount,
+                          accountType: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <button
+                    onClick={handleAddAccount}
                     style={{
                       background: "#6C63FF",
                       color: "white",
@@ -523,10 +703,10 @@ function Topbar({ collapsed }) {
                       cursor: "pointer",
                     }}
                   >
-                    Add
+                    Add Account
                   </button>
                 </div>
-                <div style={{ maxHeight: 180, overflowY: "auto" }}>
+                <div style={{ maxHeight: 300, overflowY: "auto" }}>
                   {accounts.map((acc) => (
                     <div
                       key={acc.id}
@@ -534,18 +714,23 @@ function Topbar({ collapsed }) {
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "space-between",
-                        padding: "6px 0",
+                        padding: "12px 0",
                         borderBottom: "1px solid #f4f6fa",
                       }}
                     >
-                      <span
+                      <div
                         style={{
                           display: "flex",
-                          alignItems: "center",
-                          gap: 8,
+                          flexDirection: "column",
+                          gap: 4,
                         }}
                       >
-                        <span>{acc.name}</span>
+                        <span style={{ fontWeight: 500 }}>{acc.name}</span>
+                        <span style={{ fontSize: 13, color: "#666" }}>
+                          {renderAccountInfo(acc)}
+                        </span>
+                      </div>
+                      <div>
                         <FaCog
                           style={{
                             color: "#888",
@@ -555,46 +740,9 @@ function Topbar({ collapsed }) {
                           title="Account Settings"
                           onClick={() => handleOpenAccountSettings(acc)}
                         />
-                      </span>
-                      {accounts.length > 1 && (
-                        <button
-                          onClick={() => removeAccount(acc.id)}
-                          style={{
-                            background: "none",
-                            border: "none",
-                            color: "#cf1322",
-                            cursor: "pointer",
-                            fontSize: 15,
-                          }}
-                          title="Remove account"
-                        >
-                          ×
-                        </button>
-                      )}
+                      </div>
                     </div>
                   ))}
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "flex-end",
-                    marginTop: 18,
-                  }}
-                >
-                  <button
-                    onClick={() => setShowAccountModal(false)}
-                    style={{
-                      padding: "8px 18px",
-                      background: "#6C63FF",
-                      color: "white",
-                      border: "none",
-                      borderRadius: 8,
-                      fontWeight: 500,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Close
-                  </button>
                 </div>
               </div>
             </div>
@@ -609,7 +757,7 @@ function Topbar({ collapsed }) {
                 width: "100vw",
                 height: "100vh",
                 background: "rgba(0,0,0,0.18)",
-                zIndex: 10000,
+                zIndex: 9999,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -622,101 +770,196 @@ function Topbar({ collapsed }) {
                   background: "#fff",
                   borderRadius: 12,
                   padding: 32,
-                  minWidth: 320,
+                  minWidth: 400,
                   boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
-                  position: "relative",
                 }}
               >
-                <div
-                  style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}
-                >
-                  Account Settings: {accountSettings.name}
+                <h2 style={{ margin: "0 0 24px 0", fontSize: 20 }}>
+                  Account Settings
+                </h2>
+                <div style={{ marginBottom: 16 }}>
+                  <label
+                    style={{
+                      display: "block",
+                      marginBottom: 8,
+                      fontSize: 14,
+                      color: "#666",
+                    }}
+                  >
+                    Account Name
+                  </label>
+                  <input
+                    type="text"
+                    name="name"
+                    value={accountSettings.name}
+                    onChange={handleAccountSettingsChange}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: 6,
+                      border: "1px solid #d9d9d9",
+                      fontSize: 14,
+                    }}
+                  />
                 </div>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 16,
-                    marginBottom: 16,
-                  }}
-                >
-                  <label style={{ fontWeight: 500 }}>
+                <div style={{ marginBottom: 16 }}>
+                  <label
+                    style={{
+                      display: "block",
+                      marginBottom: 8,
+                      fontSize: 14,
+                      color: "#666",
+                    }}
+                  >
                     Initial Balance
+                  </label>
+                  <input
+                    type="number"
+                    name="initialBalance"
+                    value={accountSettings.initialBalance}
+                    onChange={handleAccountSettingsChange}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: 6,
+                      border: "1px solid #d9d9d9",
+                      fontSize: 14,
+                    }}
+                  />
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <label
+                    style={{
+                      display: "block",
+                      marginBottom: 8,
+                      fontSize: 14,
+                      color: "#666",
+                    }}
+                  >
+                    Current Balance
+                  </label>
+                  <div
+                    style={{ display: "flex", gap: 8, alignItems: "center" }}
+                  >
                     <input
                       type="number"
-                      name="initialBalance"
-                      value={accountSettings.initialBalance}
+                      name="currentBalance"
+                      value={accountSettings.currentBalance}
                       onChange={handleAccountSettingsChange}
                       style={{
-                        width: "100%",
-                        padding: 8,
+                        flex: 1,
+                        padding: "8px 12px",
                         borderRadius: 6,
-                        border: "1px solid #eee",
-                        fontSize: 15,
-                        marginTop: 4,
+                        border: "1px solid #d9d9d9",
+                        fontSize: 14,
                       }}
+                      disabled
                     />
-                  </label>
-                  <label style={{ fontWeight: 500 }}>
-                    Account Type
-                    <select
-                      name="accountType"
-                      value={accountSettings.accountType}
-                      onChange={handleAccountSettingsChange}
+                    <button
+                      onClick={handleRecalculateBalance}
                       style={{
-                        width: "100%",
-                        padding: 8,
-                        borderRadius: 6,
-                        border: "1px solid #eee",
-                        fontSize: 15,
-                        marginTop: 4,
+                        padding: "8px 12px",
+                        background: "none",
+                        border: "none",
+                        color: "#1890ff",
+                        cursor: "pointer",
+                        fontSize: 14,
+                        fontWeight: 500,
+                        whiteSpace: "nowrap",
                       }}
                     >
-                      <option value="Live">Live</option>
-                      <option value="Prop Evaluation">Prop Evaluation</option>
-                      <option value="Prop Verification">
-                        Prop Verification
-                      </option>
-                      <option value="Prop Funded">Prop Funded</option>
-                      <option value="Demo">Demo</option>
-                    </select>
-                  </label>
+                      Recalculate
+                    </button>
+                  </div>
                 </div>
+                <div style={{ marginBottom: 24 }}>
+                  <label
+                    style={{
+                      display: "block",
+                      marginBottom: 8,
+                      fontSize: 14,
+                      color: "#666",
+                    }}
+                  >
+                    Account Type
+                  </label>
+                  <AccountTypeSelect
+                    value={accountSettings.accountType}
+                    onChange={handleAccountSettingsChange}
+                  />
+                </div>
+                {error && (
+                  <div
+                    style={{
+                      color: "#cf1322",
+                      marginBottom: 16,
+                      fontSize: 14,
+                    }}
+                  >
+                    {error}
+                  </div>
+                )}
                 <div
                   style={{
                     display: "flex",
-                    justifyContent: "flex-end",
-                    gap: 10,
+                    justifyContent: "space-between",
+                    alignItems: "center",
                   }}
                 >
                   <button
-                    onClick={() => setShowAccountSettingsModal(false)}
+                    onClick={() => handleDeleteAccount(accountSettings.id)}
                     style={{
-                      padding: "8px 18px",
-                      background: "#f4f6fa",
-                      color: "#333",
+                      background: "none",
                       border: "none",
-                      borderRadius: 8,
-                      fontWeight: 500,
+                      color: "#cf1322",
                       cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 14,
+                      padding: "8px 16px",
+                      borderRadius: 6,
+                      transition: "background-color 0.2s",
                     }}
+                    onMouseOver={(e) =>
+                      (e.currentTarget.style.backgroundColor = "#fff1f0")
+                    }
+                    onMouseOut={(e) =>
+                      (e.currentTarget.style.backgroundColor = "transparent")
+                    }
                   >
-                    Cancel
+                    <FaTrash style={{ fontSize: 14 }} />
+                    Delete Account
                   </button>
-                  <button
-                    onClick={handleSaveAccountSettings}
-                    style={{
-                      padding: "8px 18px",
-                      background: "#6C63FF",
-                      color: "white",
-                      border: "none",
-                      borderRadius: 8,
-                      fontWeight: 500,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Save
-                  </button>
+                  <div style={{ display: "flex", gap: 12 }}>
+                    <button
+                      onClick={() => setShowAccountSettingsModal(false)}
+                      style={{
+                        padding: "8px 16px",
+                        background: "#f0f0f0",
+                        border: "1px solid #d9d9d9",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        fontSize: 14,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveAccountSettings}
+                      style={{
+                        padding: "8px 16px",
+                        background: "#1890ff",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        fontSize: 14,
+                      }}
+                    >
+                      Save Changes
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

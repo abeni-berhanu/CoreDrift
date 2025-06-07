@@ -23,6 +23,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { useAccount } from "../contexts/AccountContext";
 import { useDateRange } from "../contexts/DateRangeContext";
 import { useSetups } from "../contexts/SetupsContext";
+import { useTradeLog } from "../contexts/TradeLogContext";
 import TradeTable from "../components/TradeTable";
 import TradeModal from "../components/TradeModal";
 import TestDataInitializer from "../components/TestDataInitializer";
@@ -815,6 +816,7 @@ export default function Dashboard() {
   const { accounts, selectedAccountIds } = useAccount();
   const { startDate, endDate } = useDateRange();
   const { setups = [] } = useSetups();
+  const { trades: globalTrades, loading: loadingTrades } = useTradeLog();
 
   const [allFetchedTrades, setAllFetchedTrades] = useState([]);
   const [dailyTradeData, setDailyTradeData] = useState({});
@@ -826,7 +828,6 @@ export default function Dashboard() {
     avgWinLoss: "N/A",
     numTrades: 0,
   });
-  const [loadingTrades, setLoadingTrades] = useState(true);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalDayData, setModalDayData] = useState(null);
@@ -865,7 +866,7 @@ export default function Dashboard() {
   );
 
   useEffect(() => {
-    if (!user || !user.uid || selectedAccountIds.length === 0) {
+    if (!user || !user.uid) {
       setAllFetchedTrades([]);
       setDailyTradeData({});
       setDashboardSummaryData({
@@ -877,117 +878,55 @@ export default function Dashboard() {
         numTrades: 0,
       });
       setCalendarDisplayData({});
-      setLoadingTrades(false);
       return;
     }
 
-    setLoadingTrades(true);
-    const unsubscribes = [];
-    const accountIdToNameMap = accounts.reduce((acc, current) => {
-      acc[current.id] = current.name;
-      return acc;
-    }, {});
+    // Filter trades based on date range
+    let filteredTrades = [...globalTrades];
 
-    selectedAccountIds.forEach((accountId) => {
-      const tradesPath = `users/${user.uid}/accounts/${accountId}/trades`;
-      let tradesQuery = query(collection(db, tradesPath));
-
-      if (startDate) {
-        try {
-          tradesQuery = query(
-            tradesQuery,
-            where(
-              "entryTimestamp",
-              ">=",
-              Timestamp.fromDate(new Date(startDate))
-            )
-          );
-        } catch (e) {
-          console.error("Dashboard: Error with start date query:", e);
-        }
-      }
-      if (endDate) {
-        try {
-          const endOfDay = new Date(endDate);
-          endOfDay.setHours(23, 59, 59, 999);
-          tradesQuery = query(
-            tradesQuery,
-            where("entryTimestamp", "<=", Timestamp.fromDate(endOfDay))
-          );
-        } catch (e) {
-          console.error("Dashboard: Error with end date query:", e);
-        }
-      }
-      tradesQuery = query(tradesQuery, orderBy("entryTimestamp", "desc"));
-
-      const unsubscribe = onSnapshot(
-        tradesQuery,
-        (querySnapshot) => {
-          const accountTrades = querySnapshot.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-            accountName: accountIdToNameMap[accountId] || "Unknown Account",
-            accountId: accountId,
-          }));
-
-          setAllFetchedTrades((prevTrades) => {
-            const otherAccountTrades = prevTrades.filter(
-              (t) => t.accountId !== accountId
-            );
-            const combined = [...otherAccountTrades, ...accountTrades];
-            combined.sort((a, b) => {
-              const timeA = a.entryTimestamp?.toMillis
-                ? a.entryTimestamp.toMillis()
-                : a.entryTimestamp?.toDate
-                ? a.entryTimestamp.toDate().getTime()
-                : a.entryTimestamp instanceof Date
-                ? a.entryTimestamp.getTime()
-                : typeof a.entryTimestamp === "string"
-                ? new Date(a.entryTimestamp).getTime()
-                : 0;
-              const timeB = b.entryTimestamp?.toMillis
-                ? b.entryTimestamp.toMillis()
-                : b.entryTimestamp?.toDate
-                ? b.entryTimestamp.toDate().getTime()
-                : b.entryTimestamp instanceof Date
-                ? b.entryTimestamp.getTime()
-                : typeof b.entryTimestamp === "string"
-                ? new Date(b.entryTimestamp).getTime()
-                : 0;
-              return timeB - timeA;
-            });
-            return combined;
-          });
-        },
-        (error) => {
-          console.error(
-            `Dashboard: Error fetching trades for account ${accountId} from ${tradesPath}:`,
-            error
-          );
-        }
-      );
-      unsubscribes.push(unsubscribe);
-    });
-
-    if (selectedAccountIds.length === 0) {
-      setAllFetchedTrades([]);
-      setDailyTradeData({});
-      setDashboardSummaryData({
-        netPL: 0,
-        tradeWin: 0,
-        profitFactor: "N/A",
-        dayWin: 0,
-        avgWinLoss: "N/A",
-        numTrades: 0,
+    if (startDate) {
+      filteredTrades = filteredTrades.filter((trade) => {
+        const exitDate =
+          trade.exitTimestamp?.toDate?.() || new Date(trade.exitTimestamp);
+        return exitDate >= new Date(startDate);
       });
-      setCalendarDisplayData({});
-      setLoadingTrades(false);
     }
 
-    return () => {
-      unsubscribes.forEach((unsub) => unsub());
-    };
-  }, [user, accounts, selectedAccountIds, startDate, endDate]);
+    if (endDate) {
+      const endOfDay = new Date(endDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      filteredTrades = filteredTrades.filter((trade) => {
+        const exitDate =
+          trade.exitTimestamp?.toDate?.() || new Date(trade.exitTimestamp);
+        return exitDate <= endOfDay;
+      });
+    }
+
+    // Sort trades by exit timestamp
+    filteredTrades.sort((a, b) => {
+      const timeA = a.exitTimestamp?.toMillis
+        ? a.exitTimestamp.toMillis()
+        : a.exitTimestamp?.toDate
+        ? a.exitTimestamp.toDate().getTime()
+        : a.exitTimestamp instanceof Date
+        ? a.exitTimestamp.getTime()
+        : typeof a.exitTimestamp === "string"
+        ? new Date(a.exitTimestamp).getTime()
+        : 0;
+      const timeB = b.exitTimestamp?.toMillis
+        ? b.exitTimestamp.toMillis()
+        : b.exitTimestamp?.toDate
+        ? b.exitTimestamp.toDate().getTime()
+        : b.exitTimestamp instanceof Date
+        ? b.exitTimestamp.getTime()
+        : typeof b.exitTimestamp === "string"
+        ? new Date(b.exitTimestamp).getTime()
+        : 0;
+      return timeB - timeA;
+    });
+
+    setAllFetchedTrades(filteredTrades);
+  }, [user, globalTrades, startDate, endDate]);
 
   useEffect(() => {
     if (!allFetchedTrades.length && !loadingTrades) {
@@ -1001,142 +940,96 @@ export default function Dashboard() {
         numTrades: 0,
       });
       setCalendarDisplayData({});
-      setLoadingTrades(false);
       return;
     }
     if (allFetchedTrades.length > 0) {
       const dailyData = {};
       allFetchedTrades.forEach((trade) => {
-        if (trade.entryTimestamp) {
+        if (trade.exitTimestamp) {
           let dateStr;
-          if (trade.entryTimestamp.toDate) {
-            dateStr = trade.entryTimestamp.toDate().toISOString().split("T")[0];
-          } else if (trade.entryTimestamp instanceof Date) {
-            dateStr = trade.entryTimestamp.toISOString().split("T")[0];
-          } else if (typeof trade.entryTimestamp === "string") {
-            dateStr = new Date(trade.entryTimestamp)
-              .toISOString()
-              .split("T")[0];
-          } else if (trade.entryTimestamp.toMillis) {
-            dateStr = new Date(trade.entryTimestamp.toMillis())
-              .toISOString()
-              .split("T")[0];
+          if (trade.exitTimestamp.toDate) {
+            dateStr = trade.exitTimestamp.toDate().toISOString().split("T")[0];
+          } else if (trade.exitTimestamp instanceof Date) {
+            dateStr = trade.exitTimestamp.toISOString().split("T")[0];
+          } else if (typeof trade.exitTimestamp === "string") {
+            dateStr = trade.exitTimestamp.split("T")[0];
           } else {
-            console.warn(
-              "Invalid entryTimestamp format:",
-              trade.entryTimestamp
-            );
             return;
           }
 
           if (!dailyData[dateStr]) {
-            dailyData[dateStr] = { pnl: 0, count: 0, trades: [] };
+            dailyData[dateStr] = {
+              pnl: 0,
+              tradeCount: 0,
+              trades: [],
+            };
           }
-          const tradePnL = parseFloat(trade.netPnL) || 0;
-          dailyData[dateStr].pnl += tradePnL;
-          dailyData[dateStr].count += 1;
+
+          dailyData[dateStr].pnl += parseFloat(trade.netPnL) || 0;
+          dailyData[dateStr].tradeCount += 1;
           dailyData[dateStr].trades.push(trade);
         }
       });
+
       setDailyTradeData(dailyData);
 
-      const newCalendarDisplayData = {};
-      Object.keys(dailyData).forEach((dateStr) => {
-        newCalendarDisplayData[dateStr] = {
-          pnl: dailyData[dateStr].pnl,
-          tradeCount: dailyData[dateStr].count,
-        };
-      });
-      setCalendarDisplayData(newCalendarDisplayData);
-
-      const netPL = allFetchedTrades.reduce(
+      // Calculate summary data
+      const totalPnL = allFetchedTrades.reduce(
         (sum, trade) => sum + (parseFloat(trade.netPnL) || 0),
         0
       );
-      const winningTrades = allFetchedTrades.filter((t) => t.status === "WIN");
-      const losingTrades = allFetchedTrades.filter((t) => t.status === "LOSS");
-      const numTrades = allFetchedTrades.length;
-
-      const tradeWin =
-        numTrades > 0 && winningTrades.length + losingTrades.length > 0
-          ? parseFloat(
-              (
-                (winningTrades.length /
-                  (winningTrades.length + losingTrades.length)) *
-                100
-              ).toFixed(2)
-            )
-          : 0;
-
-      const grossProfit = winningTrades.reduce(
-        (sum, t) => sum + (t.netPnL || 0),
+      const winningTrades = allFetchedTrades.filter(
+        (trade) => (parseFloat(trade.netPnL) || 0) > 0
+      );
+      const losingTrades = allFetchedTrades.filter(
+        (trade) => (parseFloat(trade.netPnL) || 0) < 0
+      );
+      const totalWins = winningTrades.reduce(
+        (sum, trade) => sum + (parseFloat(trade.netPnL) || 0),
         0
       );
-      const grossLoss = Math.abs(
-        losingTrades.reduce((sum, t) => sum + (t.netPnL || 0), 0)
+      const totalLosses = Math.abs(
+        losingTrades.reduce(
+          (sum, trade) => sum + (parseFloat(trade.netPnL) || 0),
+          0
+        )
       );
 
-      let profitFactor = "N/A";
-      if (grossLoss === 0) {
-        profitFactor = grossProfit > 0 ? "∞" : "N/A";
-      } else {
-        profitFactor = (grossProfit / grossLoss).toFixed(2);
-      }
-
-      let avgWinLoss = "N/A";
-      if (winningTrades.length > 0 && losingTrades.length > 0) {
-        const avgWin = grossProfit / winningTrades.length;
-        const avgLoss = grossLoss / losingTrades.length;
-        if (avgLoss !== 0) {
-          avgWinLoss = (avgWin / avgLoss).toFixed(2);
-        } else {
-          avgWinLoss = avgWin > 0 ? "∞" : "N/A";
-        }
-      } else if (winningTrades.length > 0) {
-        avgWinLoss = "∞";
-      }
-
-      const tradingDays = new Set(
-        allFetchedTrades
-          .map((t) => {
-            if (!t.entryTimestamp) return null;
-            if (t.entryTimestamp.toDate) {
-              return t.entryTimestamp.toDate().toISOString().split("T")[0];
-            } else if (t.entryTimestamp instanceof Date) {
-              return t.entryTimestamp.toISOString().split("T")[0];
-            } else if (typeof t.entryTimestamp === "string") {
-              return new Date(t.entryTimestamp).toISOString().split("T")[0];
-            } else if (t.entryTimestamp.toMillis) {
-              return new Date(t.entryTimestamp.toMillis())
-                .toISOString()
-                .split("T")[0];
-            }
-            return null;
-          })
-          .filter(Boolean)
-      );
-      const profitableDays = new Set();
-      Object.keys(dailyData).forEach((dateStr) => {
-        if (dailyData[dateStr].pnl > 0) {
-          profitableDays.add(dateStr);
-        }
-      });
-      const dayWin =
-        tradingDays.size > 0
-          ? parseFloat(
-              ((profitableDays.size / tradingDays.size) * 100).toFixed(2)
-            )
-          : 0;
+      // Calculate winning days
+      const winningDays = Object.values(dailyData).filter(
+        (day) => day.pnl > 0
+      ).length;
+      const totalDays = Object.keys(dailyData).length;
 
       setDashboardSummaryData({
-        netPL,
-        tradeWin,
-        profitFactor,
-        dayWin,
-        avgWinLoss,
-        numTrades,
+        netPL: totalPnL,
+        tradeWin:
+          allFetchedTrades.length > 0
+            ? Math.round((winningTrades.length / allFetchedTrades.length) * 100)
+            : 0,
+        profitFactor:
+          totalLosses > 0 ? (totalWins / totalLosses).toFixed(2) : "N/A",
+        dayWin: totalDays > 0 ? Math.round((winningDays / totalDays) * 100) : 0,
+        avgWinLoss:
+          winningTrades.length > 0 && losingTrades.length > 0
+            ? (
+                totalWins /
+                winningTrades.length /
+                (totalLosses / losingTrades.length)
+              ).toFixed(2)
+            : "N/A",
+        numTrades: allFetchedTrades.length,
       });
-      setLoadingTrades(false);
+
+      // Prepare calendar data
+      const calendarData = {};
+      Object.entries(dailyData).forEach(([dateStr, data]) => {
+        calendarData[dateStr] = {
+          pnl: data.pnl,
+          tradeCount: data.tradeCount,
+        };
+      });
+      setCalendarDisplayData(calendarData);
     } else if (!loadingTrades && allFetchedTrades.length === 0) {
       setDailyTradeData({});
       setDashboardSummaryData({
@@ -1220,9 +1113,6 @@ export default function Dashboard() {
         setups={setups}
         setupColors={setupColors}
       />
-      <h2 style={{ marginBottom: 24 }}>
-        Good morning! {/* Potentially user.displayName here */}
-      </h2>
 
       {loadingTrades && (
         <div style={{ textAlign: "center", padding: 20 }}>

@@ -1,7 +1,12 @@
 // Trade calculation helpers for CoreDrift
 
 // Helper to recalculate derived fields for trade detail modal
-export function recalculateTradeFields(form, initialBalance = 100000) {
+export function recalculateTradeFields(form, initialBalance) {
+  if (!initialBalance) {
+    console.error("initialBalance is required for recalculateTradeFields");
+    return form;
+  }
+
   const entryPrice = parseFloat(form.entryPrice);
   const exitPrice = parseFloat(form.exitPrice);
   const sl = parseFloat(form.sl);
@@ -130,7 +135,14 @@ export function recalculateTradeFields(form, initialBalance = 100000) {
 }
 
 // Helper to recalculate derived fields for upload modal
-export function recalculateTradeFieldsUpload(trade, initialBalance = 100000) {
+export function recalculateTradeFieldsUpload(trade, initialBalance) {
+  if (!initialBalance) {
+    console.error(
+      "initialBalance is required for recalculateTradeFieldsUpload"
+    );
+    return trade;
+  }
+
   const entryPrice = parseFloat(trade.entryPrice);
   const exitPrice = parseFloat(trade.exitPrice);
   const sl = parseFloat(trade.sl);
