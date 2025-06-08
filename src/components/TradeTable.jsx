@@ -1,5 +1,14 @@
 import React, { useState, useRef, useEffect } from "react";
-import { FaFilter } from "react-icons/fa";
+import {
+  FaFilter,
+  FaSort,
+  FaSortUp,
+  FaSortDown,
+  FaUndo,
+  FaPlus,
+  FaFileExport,
+  FaColumns,
+} from "react-icons/fa";
 
 const thStyle = {
   padding: "10px 8px",
@@ -35,9 +44,17 @@ function TradeTable({
   emptyMessage = "No trades found.",
   loading = false,
   defaultVisibleColumns,
+  onAddTrade,
+  onExport,
+  onColumnVisibility,
 }) {
   const containerRef = useRef(null);
   const filterButtonRef = useRef(null);
+  const [sortConfig, setSortConfig] = useState({
+    key: "entryTimestamp",
+    direction: "desc",
+  });
+
   // Helper for account name
   const getAccountName = (accountId) =>
     accounts.find((a) => a.id === accountId)?.name || "";
@@ -67,6 +84,52 @@ function TradeTable({
       ? defaultVisibleColumns
       : allColumnKeys
   );
+
+  // Sort handler
+  const handleSort = (key) => {
+    let direction = "asc";
+    if (sortConfig.key === key && sortConfig.direction === "asc") {
+      direction = "desc";
+    }
+    setSortConfig({ key, direction });
+  };
+
+  // Get sort icon
+  const getSortIcon = (key) => {
+    if (sortConfig.key !== key) return <FaSort style={{ opacity: 0.3 }} />;
+    return sortConfig.direction === "asc" ? <FaSortUp /> : <FaSortDown />;
+  };
+
+  // Sort trades
+  const sortedTrades = React.useMemo(() => {
+    if (!sortConfig.key) return trades;
+
+    return [...trades].sort((a, b) => {
+      let aValue = a[sortConfig.key];
+      let bValue = b[sortConfig.key];
+
+      // Handle special cases
+      if (sortConfig.key === "accountName") {
+        aValue = getAccountName(a.accountId);
+        bValue = getAccountName(b.accountId);
+      } else if (
+        sortConfig.key === "entryTimestamp" ||
+        sortConfig.key === "exitTimestamp"
+      ) {
+        aValue = a[sortConfig.key]?.toDate?.() || a[sortConfig.key];
+        bValue = b[sortConfig.key]?.toDate?.() || b[sortConfig.key];
+      }
+
+      // Handle null/undefined values
+      if (aValue == null) return sortConfig.direction === "asc" ? -1 : 1;
+      if (bValue == null) return sortConfig.direction === "asc" ? 1 : -1;
+
+      // Compare values
+      if (aValue < bValue) return sortConfig.direction === "asc" ? -1 : 1;
+      if (aValue > bValue) return sortConfig.direction === "asc" ? 1 : -1;
+      return 0;
+    });
+  }, [trades, sortConfig, getAccountName]);
 
   const handleToggleColumn = (key) => {
     setVisibleColumns((prev) =>
@@ -115,227 +178,307 @@ function TradeTable({
     }
   };
 
+  // Reset sort handler
+  const handleResetSort = (e) => {
+    e.stopPropagation();
+    setSortConfig({ key: "entryTimestamp", direction: "desc" });
+  };
+
+  // Add handler functions
+  const handleAddTrade = () => {
+    // This should be handled by the parent component
+    if (onAddTrade) {
+      onAddTrade();
+    }
+  };
+
+  const handleExport = () => {
+    // This should be handled by the parent component
+    if (onExport) {
+      onExport();
+    }
+  };
+
+  const handleColumnVisibility = () => {
+    // This should be handled by the parent component
+    if (onColumnVisibility) {
+      onColumnVisibility();
+    }
+  };
+
   return (
-    <div
-      ref={containerRef}
-      style={{
-        overflowX: "auto",
-        width: "100%",
-        boxSizing: "border-box",
-        position: "relative",
-        paddingTop: 24, // Add space for the filter icon
-      }}
-    >
-      {/* Filter Icon */}
+    <div style={{ width: "100%" }}>
       <div
+        ref={containerRef}
         style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          zIndex: 10,
-          padding: 4,
-          cursor: "pointer",
-        }}
-      >
-        <FaFilter
-          style={{
-            fontSize: 14,
-            color: showColumnFilter ? "#6C63FF" : "#888",
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowColumnFilter((v) => !v);
-          }}
-          title="Filter Columns"
-        />
-      </div>
-
-      <table
-        style={{
+          position: "relative",
           width: "100%",
-          borderCollapse: "collapse",
-          borderSpacing: 0,
+          overflowX: "auto",
           background: "#fff",
-          fontSize: 15,
-          minWidth: 1200,
+          borderRadius: 12,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+          paddingTop: 32,
         }}
       >
-        <thead>
-          <tr style={{ background: "#f4f6fa" }}>
-            {showCheckboxes && (
-              <th style={thStyle}>
-                <input
-                  type="checkbox"
-                  checked={
-                    selectedRows.length === trades.length && trades.length > 0
-                  }
-                  onChange={handleSelectAll}
-                  style={{ cursor: "pointer" }}
-                />
-              </th>
-            )}
-            {columns
-              .filter((col) => visibleColumns.includes(col.key))
-              .map((col, idx) => (
-                <th key={col.key} style={thStyle}>
-                  {col.label}
-                </th>
-              ))}
-          </tr>
-        </thead>
-        <tbody>
-          {loading ? (
-            <tr>
-              <td
-                colSpan={visibleColumns.length + (showCheckboxes ? 1 : 0)}
-                style={{ textAlign: "center", color: "#888", padding: 32 }}
-              >
-                Loading trades...
-              </td>
-            </tr>
-          ) : trades.length === 0 ? (
-            <tr>
-              <td
-                colSpan={visibleColumns.length + (showCheckboxes ? 1 : 0)}
-                style={{ textAlign: "center", color: "#888", padding: 32 }}
-              >
-                {emptyMessage}
-              </td>
-            </tr>
-          ) : (
-            trades.map((trade, idx) => (
-              <tr
-                key={trade.id || idx}
-                style={{
-                  borderBottom: "1px solid #f0f0f0",
-                  cursor: onRowClick ? "pointer" : undefined,
-                  background: selectedRows.includes(trade.id)
-                    ? "#e6f7ff"
-                    : idx % 2 === 0
-                    ? "#fff"
-                    : "#f9faff",
-                  transition: "all 0.2s ease",
-                }}
-                onClick={onRowClick ? () => onRowClick(trade) : undefined}
-                onMouseEnter={(e) => {
-                  if (!selectedRows.includes(trade.id)) {
-                    e.currentTarget.style.background = "#f0f4ff";
-                    e.currentTarget.style.transform = "translateY(-1px)";
-                    e.currentTarget.style.boxShadow =
-                      "0 2px 4px rgba(0,0,0,0.05)";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!selectedRows.includes(trade.id)) {
-                    e.currentTarget.style.background =
-                      idx % 2 === 0 ? "#fff" : "#f9faff";
-                    e.currentTarget.style.transform = "translateY(0)";
-                    e.currentTarget.style.boxShadow = "none";
-                  }
-                }}
-              >
-                {showCheckboxes && (
-                  <td style={tdStyle}>
-                    <input
-                      type="checkbox"
-                      checked={selectedRows.includes(trade.id)}
-                      onChange={() => onSelectRow && onSelectRow(trade.id)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </td>
-                )}
-                {columns
-                  .filter((col) => visibleColumns.includes(col.key))
-                  .map((col) => (
-                    <td key={col.key} style={tdStyle}>
-                      {col.render
-                        ? col.render(trade, {
-                            accounts,
-                            formatDateTime24,
-                            getAccountName,
-                          })
-                        : col.key === "accountName"
-                        ? getAccountName(trade.accountId)
-                        : col.key === "entryTimestamp" ||
-                          col.key === "exitTimestamp"
-                        ? formatDateTime24(trade[col.key])
-                        : trade[col.key] ?? ""}
-                    </td>
-                  ))}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-
-      {/* Column Filter Dropdown */}
-      {showColumnFilter && (
+        {/* Filter Icon */}
         <div
           style={{
-            position: "fixed",
-            top: 80,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 2000,
-            background: "#fff",
-            border: "1px solid #eee",
-            borderRadius: 10,
-            boxShadow: "0 4px 24px rgba(0,0,0,0.10)",
-            padding: 18,
-            minWidth: 400,
-            maxWidth: 600,
-            maxHeight: "80vh",
-            overflow: "hidden",
+            position: "absolute",
+            left: 8,
+            top: 8,
+            zIndex: 10,
+            cursor: "pointer",
           }}
         >
-          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 10 }}>
-            Show Columns
-          </div>
+          <FaFilter
+            style={{
+              fontSize: 14,
+              color: showColumnFilter ? "#6C63FF" : "#888",
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowColumnFilter((v) => !v);
+            }}
+            title="Filter Columns"
+          />
+        </div>
+
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            fontSize: 14,
+          }}
+        >
+          <thead>
+            <tr style={{ background: "#f4f6fa" }}>
+              {showCheckboxes && (
+                <th style={thStyle}>
+                  <input
+                    type="checkbox"
+                    checked={
+                      selectedRows.length === trades.length && trades.length > 0
+                    }
+                    onChange={handleSelectAll}
+                    style={{ cursor: "pointer" }}
+                  />
+                </th>
+              )}
+              {columns
+                .filter((col) => visibleColumns.includes(col.key))
+                .map((col) => (
+                  <th
+                    key={col.key}
+                    style={{
+                      ...thStyle,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      position: "relative",
+                    }}
+                    onClick={() => handleSort(col.key)}
+                  >
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 4 }}
+                    >
+                      {col.label}
+                      {getSortIcon(col.key)}
+                      {col.key === "entryTimestamp" && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleResetSort(e);
+                          }}
+                          style={{
+                            position: "absolute",
+                            right: 8,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            background: "none",
+                            border: "none",
+                            padding: 4,
+                            cursor: "pointer",
+                            color: "#888",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            borderRadius: 4,
+                            transition: "all 0.2s",
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background =
+                              "rgba(0,0,0,0.05)";
+                            e.currentTarget.style.color = "#666";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = "none";
+                            e.currentTarget.style.color = "#888";
+                          }}
+                          title="Reset to default sort"
+                        >
+                          <FaUndo style={{ fontSize: 12 }} />
+                        </button>
+                      )}
+                    </div>
+                  </th>
+                ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td
+                  colSpan={visibleColumns.length + (showCheckboxes ? 1 : 0)}
+                  style={{ textAlign: "center", color: "#888", padding: 32 }}
+                >
+                  Loading trades...
+                </td>
+              </tr>
+            ) : sortedTrades.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={visibleColumns.length + (showCheckboxes ? 1 : 0)}
+                  style={{ textAlign: "center", color: "#888", padding: 32 }}
+                >
+                  {emptyMessage}
+                </td>
+              </tr>
+            ) : (
+              sortedTrades.map((trade, idx) => (
+                <tr
+                  key={trade.id || idx}
+                  style={{
+                    borderBottom: "1px solid #f0f0f0",
+                    cursor: onRowClick ? "pointer" : undefined,
+                    background: selectedRows.includes(trade.id)
+                      ? "#e6f7ff"
+                      : idx % 2 === 0
+                      ? "#fff"
+                      : "#f9faff",
+                    transition: "all 0.2s ease",
+                  }}
+                  onClick={onRowClick ? () => onRowClick(trade) : undefined}
+                  onMouseEnter={(e) => {
+                    if (!selectedRows.includes(trade.id)) {
+                      e.currentTarget.style.background = "#f0f4ff";
+                      e.currentTarget.style.transform = "translateY(-1px)";
+                      e.currentTarget.style.boxShadow =
+                        "0 2px 4px rgba(0,0,0,0.05)";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!selectedRows.includes(trade.id)) {
+                      e.currentTarget.style.background =
+                        idx % 2 === 0 ? "#fff" : "#f9faff";
+                      e.currentTarget.style.transform = "translateY(0)";
+                      e.currentTarget.style.boxShadow = "none";
+                    }
+                  }}
+                >
+                  {showCheckboxes && (
+                    <td style={tdStyle}>
+                      <input
+                        type="checkbox"
+                        checked={selectedRows.includes(trade.id)}
+                        onChange={() => onSelectRow && onSelectRow(trade.id)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </td>
+                  )}
+                  {columns
+                    .filter((col) => visibleColumns.includes(col.key))
+                    .map((col) => (
+                      <td key={col.key} style={tdStyle}>
+                        {col.render
+                          ? col.render(trade, {
+                              accounts,
+                              formatDateTime24,
+                              getAccountName,
+                            })
+                          : col.key === "accountName"
+                          ? getAccountName(trade.accountId)
+                          : col.key === "entryTimestamp" ||
+                            col.key === "exitTimestamp"
+                          ? formatDateTime24(trade[col.key])
+                          : trade[col.key] ?? ""}
+                      </td>
+                    ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+
+        {/* Column Filter Dropdown */}
+        {showColumnFilter && (
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: 8,
-              fontSize: 14,
-              marginBottom: 12,
+              position: "fixed",
+              top: 80,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 2000,
+              background: "#fff",
+              border: "1px solid #eee",
+              borderRadius: 10,
+              boxShadow: "0 4px 24px rgba(0,0,0,0.10)",
+              padding: 18,
+              minWidth: 400,
+              maxWidth: 600,
+              maxHeight: "80vh",
+              overflow: "hidden",
             }}
           >
-            {columns.map((col) => (
-              <label
-                key={col.key}
-                style={{ display: "flex", alignItems: "center", gap: 6 }}
-              >
-                <input
-                  type="checkbox"
-                  checked={visibleColumns.includes(col.key)}
-                  onChange={() => {
-                    setVisibleColumns((prev) =>
-                      prev.includes(col.key)
-                        ? prev.filter((k) => k !== col.key)
-                        : [...prev, col.key]
-                    );
-                  }}
-                />
-                {col.label}
-              </label>
-            ))}
-          </div>
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-            <button
+            <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 10 }}>
+              Show Columns
+            </div>
+            <div
               style={{
-                padding: "6px 14px",
-                borderRadius: 6,
-                border: "1px solid #eee",
-                background: "#f4f6fa",
-                cursor: "pointer",
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 8,
+                fontSize: 14,
+                marginBottom: 12,
               }}
-              onClick={() => setShowColumnFilter(false)}
             >
-              Close
-            </button>
+              {columns.map((col) => (
+                <label
+                  key={col.key}
+                  style={{ display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={visibleColumns.includes(col.key)}
+                    onChange={() => {
+                      setVisibleColumns((prev) =>
+                        prev.includes(col.key)
+                          ? prev.filter((k) => k !== col.key)
+                          : [...prev, col.key]
+                      );
+                    }}
+                  />
+                  {col.label}
+                </label>
+              ))}
+            </div>
+            <div
+              style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}
+            >
+              <button
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid #eee",
+                  background: "#f4f6fa",
+                  cursor: "pointer",
+                }}
+                onClick={() => setShowColumnFilter(false)}
+              >
+                Close
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

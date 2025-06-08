@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 import Select from "react-select";
@@ -109,6 +115,8 @@ function TradeModal({
   isPreviewMode = false,
   onPreviewSave,
 }) {
+  console.log("TradeModal render");
+
   const [editMode, setEditMode] = useState(editModeProp);
   const [trade, setTrade] = useState(initialTrade || {});
   const [showNotesModal, setShowNotesModal] = useState(false);
@@ -134,6 +142,278 @@ function TradeModal({
   const [localSelectedRules, setLocalSelectedRules] = useState(
     trade.selectedRules || []
   );
+  const [showFullImage, setShowFullImage] = useState(false);
+
+  // Define which fields are inputs and which are calculated
+  const inputFields = [
+    "entryTimestamp",
+    "exitTimestamp",
+    "direction",
+    "symbol",
+    "volume",
+    "entryPrice",
+    "exitPrice",
+    "sl",
+    "commission",
+    "swap",
+    "netPnL",
+    "setups",
+    "accountName",
+    "maxDrawdownR",
+    "maxRR",
+  ];
+
+  const calculatedFields = [
+    "riskAmount",
+    "duration",
+    "riskToReward",
+    "percentRisk",
+    "percentPnL",
+    "session",
+    "status",
+  ];
+
+  // Helper to get column meta by key
+  const getCol = useCallback(
+    (key) => columns.find((c) => c.key === key) || { key, label: key },
+    [columns]
+  );
+
+  // Memoize the rule checkbox change handler
+  const handleRuleCheckboxChange = useCallback((ruleId) => {
+    console.log("handleRuleCheckboxChange called with:", ruleId);
+    setLocalSelectedRules((prev) => {
+      const newRules = prev.includes(ruleId)
+        ? prev.filter((id) => id !== ruleId)
+        : [...prev, ruleId];
+      console.log("New localSelectedRules:", newRules);
+      return newRules;
+    });
+  }, []);
+
+  // Memoize the close dropdown handler
+  const handleCloseRulesDropdown = useCallback(() => {
+    console.log("handleCloseRulesDropdown called");
+    console.log("Current localSelectedRules:", localSelectedRules);
+    setShowRulesDropdown(false);
+    setTrade((prev) => {
+      const newTrade = { ...prev, selectedRules: localSelectedRules };
+      console.log("New trade state:", newTrade);
+      return newTrade;
+    });
+    if (onChange) {
+      console.log("Calling onChange with new rules");
+      onChange({ ...trade, selectedRules: localSelectedRules });
+    }
+  }, [localSelectedRules, onChange, trade]);
+
+  // Memoize the open dropdown handler
+  const handleOpenRulesDropdown = useCallback(
+    async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log("handleOpenRulesDropdown called");
+      if (trade.setups && !rulesLoading) {
+        setRulesLoading(true);
+        try {
+          console.log("Fetching rules for setup:", trade.setups);
+          await fetchRulesForSetup(trade.setups);
+          setShowRulesDropdown(true);
+        } finally {
+          setRulesLoading(false);
+        }
+      }
+    },
+    [trade.setups, rulesLoading]
+  );
+
+  // Memoize the grouped rules
+  const groupedRules = useMemo(
+    () =>
+      rules.reduce((acc, rule) => {
+        const group = rule.groupName || "Other";
+        if (!acc[group]) acc[group] = [];
+        acc[group].push(rule);
+        return acc;
+      }, {}),
+    [rules]
+  );
+
+  // Memoize the dropdown content
+  const rulesDropdownContent = useMemo(() => {
+    if (rulesLoading) {
+      return (
+        <div
+          style={{
+            color: "#888",
+            textAlign: "center",
+            padding: 12,
+            fontSize: 12,
+          }}
+        >
+          Loading...
+        </div>
+      );
+    }
+
+    if (rules.length === 0) {
+      return (
+        <div
+          style={{
+            color: "#888",
+            textAlign: "center",
+            padding: 12,
+            fontSize: 12,
+          }}
+        >
+          No rules found for this setup.
+        </div>
+      );
+    }
+
+    const allRuleIds = rules.map((rule) => rule.id);
+    const areAllSelected = allRuleIds.every((id) =>
+      localSelectedRules.includes(id)
+    );
+
+    return (
+      <div
+        style={{
+          maxHeight: 220,
+          maxWidth: 320,
+          width: "100%",
+          overflowY: "auto",
+          overflowX: "hidden",
+          background: "#fff",
+        }}
+      >
+        {editMode && (
+          <div
+            style={{
+              padding: "8px 4px",
+              borderBottom: "1px solid #eee",
+              marginBottom: 8,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={areAllSelected}
+              onChange={(e) => {
+                e.stopPropagation();
+                if (editMode) {
+                  setLocalSelectedRules(areAllSelected ? [] : allRuleIds);
+                }
+              }}
+              style={{
+                marginRight: 8,
+                accentColor: "#3b5cff",
+                width: 14,
+                height: 14,
+                borderRadius: 4,
+                border: "1px solid #bbb",
+                outline: "none",
+                cursor: editMode ? "pointer" : "default",
+              }}
+            />
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: "#222",
+              }}
+            >
+              {areAllSelected ? "Unselect All" : "Select All"}
+            </span>
+          </div>
+        )}
+        {Object.entries(groupedRules).map(([group, groupRules]) => (
+          <div key={group} style={{ marginBottom: 0 }}>
+            <div
+              style={{
+                fontWeight: 500,
+                fontSize: 13,
+                color: "#222",
+                marginBottom: 4,
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+                padding: "2px 4px",
+              }}
+            >
+              {group}
+            </div>
+            {groupRules.map((rule) => (
+              <div
+                key={rule.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  padding: "2px 2px 2px 0",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "#222",
+                  fontWeight: 400,
+                  transition: "background 0.15s",
+                  ...(editMode ? { cursor: "pointer" } : {}),
+                }}
+                onMouseEnter={(e) =>
+                  editMode && (e.currentTarget.style.background = "#f4f6fa")
+                }
+                onMouseLeave={(e) =>
+                  editMode && (e.currentTarget.style.background = "transparent")
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={
+                    Array.isArray(localSelectedRules) &&
+                    localSelectedRules.includes(rule.id)
+                  }
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    if (editMode) {
+                      handleRuleCheckboxChange(rule.id);
+                    }
+                  }}
+                  readOnly={!editMode}
+                  style={{
+                    marginRight: 8,
+                    accentColor: "#3b5cff",
+                    width: 14,
+                    height: 14,
+                    borderRadius: 4,
+                    border: "1px solid #bbb",
+                    outline: "none",
+                    cursor: editMode ? "pointer" : "default",
+                  }}
+                />
+                <span
+                  style={{
+                    flex: 1,
+                    color: "#222",
+                    fontSize: 12,
+                    fontWeight: 400,
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {rule.name}
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }, [
+    rules,
+    rulesLoading,
+    groupedRules,
+    localSelectedRules,
+    editMode,
+    handleRuleCheckboxChange,
+  ]);
 
   // Move all useEffect calls to the top level, before any return
   useEffect(() => {
@@ -177,26 +457,14 @@ function TradeModal({
 
   // Reset localSelectedRules when dropdown opens or trade.selectedRules changes
   useEffect(() => {
+    console.log("useEffect for localSelectedRules");
+    console.log("showRulesDropdown:", showRulesDropdown);
+    console.log("trade.selectedRules:", trade.selectedRules);
     if (showRulesDropdown) {
+      console.log("Setting localSelectedRules to:", trade.selectedRules || []);
       setLocalSelectedRules(trade.selectedRules || []);
     }
   }, [showRulesDropdown, trade.selectedRules]);
-
-  // Update local state only on checkbox click
-  const handleRuleCheckboxChange = (ruleId) => {
-    setLocalSelectedRules((prev) =>
-      prev.includes(ruleId)
-        ? prev.filter((id) => id !== ruleId)
-        : [...prev, ruleId]
-    );
-  };
-
-  // Only call setTrade/onChange in handleCloseRulesDropdown
-  const handleCloseRulesDropdown = () => {
-    setShowRulesDropdown(false);
-    setTrade((prev) => ({ ...prev, selectedRules: localSelectedRules }));
-    if (onChange) onChange({ ...trade, selectedRules: localSelectedRules });
-  };
 
   // Close rules dropdown when clicking outside
   useEffect(() => {
@@ -213,39 +481,104 @@ function TradeModal({
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showRulesDropdown]);
+  }, [showRulesDropdown, handleCloseRulesDropdown]);
 
-  // Define which fields are inputs and which are calculated
-  const inputFields = [
-    "entryTimestamp",
-    "exitTimestamp",
-    "direction",
-    "symbol",
-    "volume",
-    "entryPrice",
-    "exitPrice",
-    "sl",
-    "commission",
-    "swap",
-    "netPnL",
-    "setups",
-    "accountName",
-    "maxDrawdownR",
-    "maxRR",
-  ];
-  const calculatedFields = [
-    "riskAmount",
-    "duration",
-    "riskToReward",
-    "percentRisk",
-    "percentPnL",
-    "session",
-    "status",
-  ];
+  // Fetch rules for the selected setup
+  const fetchRulesForSetup = async (setupId) => {
+    console.log("fetchRulesForSetup called with:", setupId);
+    if (!user || !setupId) return;
+    try {
+      // Find the setup object
+      const setupObj = authSetups.find((s) => s.id === setupId);
+      if (!setupObj) {
+        console.log("No setup found for id:", setupId);
+        setRules([]);
+        return;
+      }
+      // Fetch rule groups and rules from Firestore
+      const ruleGroupsRef = collection(
+        db,
+        `users/${user.uid}/setups/${setupId}/ruleGroups`
+      );
+      const groupsSnap = await getDocs(ruleGroupsRef);
+      let allRules = [];
+      for (const groupDoc of groupsSnap.docs) {
+        const rulesRef = collection(
+          db,
+          `users/${user.uid}/setups/${setupId}/ruleGroups/${groupDoc.id}/rules`
+        );
+        const rulesSnap = await getDocs(rulesRef);
+        allRules.push(
+          ...rulesSnap.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+            groupName: groupDoc.data().name,
+          }))
+        );
+      }
+      console.log("Fetched rules:", allRules);
+      setRules(allRules);
+    } catch (err) {
+      console.error("Error fetching rules:", err);
+      setRules([]);
+    }
+  };
 
-  // Helper to get column meta by key
-  const getCol = (key) =>
-    columns.find((c) => c.key === key) || { key, label: key };
+  // Add paste event handler
+  useEffect(() => {
+    const handlePaste = async (e) => {
+      if (!editMode || !trade.id || imageUploading) return;
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.indexOf("image") !== -1) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (file) {
+            setImageUploading(true);
+            try {
+              const filePath = `users/${user.uid}/accounts/${
+                trade.accountId
+              }/trades/${trade.id}/chart_${Date.now()}_pasted.png`;
+
+              const { data, error } = await supabase.storage
+                .from("chart-images")
+                .upload(filePath, file, { upsert: true });
+
+              if (error) throw error;
+
+              const { data: publicUrlData } = supabase.storage
+                .from("chart-images")
+                .getPublicUrl(filePath);
+
+              const url = publicUrlData.publicUrl;
+              setTrade((prev) => ({ ...prev, imageUrl: url }));
+              if (onChange) {
+                onChange({ ...trade, imageUrl: url });
+              }
+            } catch (err) {
+              alert("Error uploading pasted image: " + err.message);
+              console.error("Upload error:", err);
+            }
+            setImageUploading(false);
+          }
+        }
+      }
+    };
+
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, [
+    editMode,
+    trade.id,
+    imageUploading,
+    user,
+    trade.accountId,
+    onChange,
+    trade,
+  ]);
 
   if (!open) return null;
 
@@ -332,6 +665,18 @@ function TradeModal({
 
   const handleFieldChange = (e) => {
     const { name, value } = e.target;
+
+    // Special handling for maxDrawdownR and maxRR
+    if (name === "maxDrawdownR" || name === "maxRR") {
+      // Only update if the value is a valid number or empty
+      if (value === "" || /^-?\d*\.?\d*$/.test(value)) {
+        const updatedTrade = { ...trade, [name]: value };
+        setTrade(updatedTrade);
+        onChange && onChange(updatedTrade);
+      }
+      return;
+    }
+
     const updatedTrade = { ...trade, [name]: value };
 
     // Calculate risk amount when entry price, stop loss, or volume changes
@@ -506,63 +851,6 @@ function TradeModal({
     setTrade((prev) => ({ ...prev, imageUrl: null }));
     onChange && onChange({ ...trade, imageUrl: null });
   };
-
-  // Fetch rules for the selected setup
-  const fetchRulesForSetup = async (setupId) => {
-    if (!user || !setupId) return;
-    setRulesLoading(true);
-    try {
-      // Find the setup object
-      const setupObj = authSetups.find((s) => s.id === setupId);
-      if (!setupObj) {
-        setRules([]);
-        setRulesLoading(false);
-        return;
-      }
-      // Fetch rule groups and rules from Firestore
-      const ruleGroupsRef = collection(
-        db,
-        `users/${user.uid}/setups/${setupId}/ruleGroups`
-      );
-      const groupsSnap = await getDocs(ruleGroupsRef);
-      let allRules = [];
-      for (const groupDoc of groupsSnap.docs) {
-        const rulesRef = collection(
-          db,
-          `users/${user.uid}/setups/${setupId}/ruleGroups/${groupDoc.id}/rules`
-        );
-        const rulesSnap = await getDocs(rulesRef);
-        allRules.push(
-          ...rulesSnap.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-            groupName: groupDoc.data().name,
-          }))
-        );
-      }
-      setRules(allRules);
-    } catch (err) {
-      setRules([]);
-    }
-    setRulesLoading(false);
-  };
-
-  // Open rules dropdown and fetch rules
-  const handleOpenRulesDropdown = async (e) => {
-    e.stopPropagation();
-    if (trade.setups) {
-      await fetchRulesForSetup(trade.setups);
-      setShowRulesDropdown(true);
-    }
-  };
-
-  // Group rules by groupName
-  const groupedRules = rules.reduce((acc, rule) => {
-    const group = rule.groupName || "Other";
-    if (!acc[group]) acc[group] = [];
-    acc[group].push(rule);
-    return acc;
-  }, {});
 
   return (
     <div style={modalStyle} onClick={onClose}>
@@ -825,11 +1113,12 @@ function TradeModal({
                   <div style={cardLabelStyle}>{col.label}</div>
                   <input
                     name={key}
-                    type="number"
-                    value={formattedTrade[key] ?? ""}
+                    type="text"
+                    value={trade[key] ?? ""}
                     onChange={handleFieldChange}
                     style={numberInputStyle}
-                    step="any"
+                    inputMode="decimal"
+                    pattern="-?\d*\.?\d*"
                   />
                 </div>
               );
@@ -873,129 +1162,9 @@ function TradeModal({
                             padding: 8,
                             fontSize: 14,
                           }}
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          {rulesLoading ? (
-                            <div
-                              style={{
-                                color: "#888",
-                                textAlign: "center",
-                                padding: 12,
-                                fontSize: 12,
-                              }}
-                            >
-                              Loading...
-                            </div>
-                          ) : rules.length === 0 ? (
-                            <div
-                              style={{
-                                color: "#888",
-                                textAlign: "center",
-                                padding: 12,
-                                fontSize: 12,
-                              }}
-                            >
-                              No rules found for this setup.
-                            </div>
-                          ) : (
-                            <div
-                              style={{
-                                maxHeight: 220,
-                                maxWidth: 320,
-                                width: "100%",
-                                overflowY: "auto",
-                                overflowX: "hidden",
-                                background: "#fff",
-                              }}
-                            >
-                              {Object.entries(groupedRules).map(
-                                ([group, groupRules]) => (
-                                  <div key={group} style={{ marginBottom: 0 }}>
-                                    <div
-                                      style={{
-                                        fontWeight: 500,
-                                        fontSize: 13,
-                                        color: "#222",
-                                        marginBottom: 4,
-                                        textTransform: "uppercase",
-                                        letterSpacing: 0.5,
-                                        padding: "2px 4px",
-                                      }}
-                                    >
-                                      {group}
-                                    </div>
-                                    {groupRules.map((rule) => (
-                                      <div
-                                        key={rule.id}
-                                        style={{
-                                          display: "flex",
-                                          alignItems: "center",
-                                          padding: "2px 2px 2px 0",
-                                          borderRadius: 6,
-                                          fontSize: 12,
-                                          color: "#222",
-                                          fontWeight: 400,
-                                          transition: "background 0.15s",
-                                          ...(editMode
-                                            ? { cursor: "pointer" }
-                                            : {}),
-                                        }}
-                                        onMouseEnter={(e) =>
-                                          editMode &&
-                                          (e.currentTarget.style.background =
-                                            "#f4f6fa")
-                                        }
-                                        onMouseLeave={(e) =>
-                                          editMode &&
-                                          (e.currentTarget.style.background =
-                                            "transparent")
-                                        }
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={
-                                            Array.isArray(localSelectedRules) &&
-                                            localSelectedRules.includes(rule.id)
-                                          }
-                                          onChange={
-                                            editMode
-                                              ? () =>
-                                                  handleRuleCheckboxChange(
-                                                    rule.id
-                                                  )
-                                              : undefined
-                                          }
-                                          readOnly={!editMode}
-                                          style={{
-                                            marginRight: 8,
-                                            accentColor: "#3b5cff",
-                                            width: 14,
-                                            height: 14,
-                                            borderRadius: 4,
-                                            border: "1px solid #bbb",
-                                            outline: "none",
-                                            cursor: editMode
-                                              ? "pointer"
-                                              : "default",
-                                          }}
-                                        />
-                                        <span
-                                          style={{
-                                            flex: 1,
-                                            color: "#222",
-                                            fontSize: 12,
-                                            fontWeight: 400,
-                                            wordBreak: "break-word",
-                                          }}
-                                        >
-                                          {rule.name}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )
-                              )}
-                            </div>
-                          )}
+                          {rulesDropdownContent}
                         </div>
                       )}
                     </span>
@@ -1068,129 +1237,9 @@ function TradeModal({
                             padding: 8,
                             fontSize: 14,
                           }}
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          {rulesLoading ? (
-                            <div
-                              style={{
-                                color: "#888",
-                                textAlign: "center",
-                                padding: 12,
-                                fontSize: 12,
-                              }}
-                            >
-                              Loading...
-                            </div>
-                          ) : rules.length === 0 ? (
-                            <div
-                              style={{
-                                color: "#888",
-                                textAlign: "center",
-                                padding: 12,
-                                fontSize: 12,
-                              }}
-                            >
-                              No rules found for this setup.
-                            </div>
-                          ) : (
-                            <div
-                              style={{
-                                maxHeight: 220,
-                                maxWidth: 320,
-                                width: "100%",
-                                overflowY: "auto",
-                                overflowX: "hidden",
-                                background: "#fff",
-                              }}
-                            >
-                              {Object.entries(groupedRules).map(
-                                ([group, groupRules]) => (
-                                  <div key={group} style={{ marginBottom: 0 }}>
-                                    <div
-                                      style={{
-                                        fontWeight: 500,
-                                        fontSize: 13,
-                                        color: "#222",
-                                        marginBottom: 4,
-                                        textTransform: "uppercase",
-                                        letterSpacing: 0.5,
-                                        padding: "2px 4px",
-                                      }}
-                                    >
-                                      {group}
-                                    </div>
-                                    {groupRules.map((rule) => (
-                                      <div
-                                        key={rule.id}
-                                        style={{
-                                          display: "flex",
-                                          alignItems: "center",
-                                          padding: "2px 2px 2px 0",
-                                          borderRadius: 6,
-                                          fontSize: 12,
-                                          color: "#222",
-                                          fontWeight: 400,
-                                          transition: "background 0.15s",
-                                          ...(editMode
-                                            ? { cursor: "pointer" }
-                                            : {}),
-                                        }}
-                                        onMouseEnter={(e) =>
-                                          editMode &&
-                                          (e.currentTarget.style.background =
-                                            "#f4f6fa")
-                                        }
-                                        onMouseLeave={(e) =>
-                                          editMode &&
-                                          (e.currentTarget.style.background =
-                                            "transparent")
-                                        }
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={
-                                            Array.isArray(localSelectedRules) &&
-                                            localSelectedRules.includes(rule.id)
-                                          }
-                                          onChange={
-                                            editMode
-                                              ? () =>
-                                                  handleRuleCheckboxChange(
-                                                    rule.id
-                                                  )
-                                              : undefined
-                                          }
-                                          readOnly={!editMode}
-                                          style={{
-                                            marginRight: 8,
-                                            accentColor: "#3b5cff",
-                                            width: 14,
-                                            height: 14,
-                                            borderRadius: 4,
-                                            border: "1px solid #bbb",
-                                            outline: "none",
-                                            cursor: editMode
-                                              ? "pointer"
-                                              : "default",
-                                          }}
-                                        />
-                                        <span
-                                          style={{
-                                            flex: 1,
-                                            color: "#222",
-                                            fontSize: 12,
-                                            fontWeight: 400,
-                                            wordBreak: "break-word",
-                                          }}
-                                        >
-                                          {rule.name}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )
-                              )}
-                            </div>
-                          )}
+                          {rulesDropdownContent}
                         </div>
                       )}
                     </span>
@@ -1375,7 +1424,9 @@ function TradeModal({
                     borderRadius: 12,
                     boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
                     background: "#f7f7fa",
+                    cursor: "pointer",
                   }}
+                  onClick={() => setShowFullImage(true)}
                 />
                 {editMode && (
                   <button
@@ -1411,25 +1462,37 @@ function TradeModal({
                   onChange={handleImageUpload}
                   disabled={imageUploading}
                 />
-                <button
-                  onClick={() =>
-                    fileInputRef.current && fileInputRef.current.click()
-                  }
+                <div
                   style={{
-                    background: "#6C63FF",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: 8,
-                    padding: "10px 24px",
-                    fontWeight: 600,
-                    fontSize: 15,
-                    cursor: imageUploading ? "not-allowed" : "pointer",
-                    opacity: imageUploading ? 0.7 : 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    alignItems: "center",
                   }}
-                  disabled={imageUploading}
                 >
-                  {imageUploading ? "Uploading..." : "Add Image"}
-                </button>
+                  <button
+                    onClick={() =>
+                      fileInputRef.current && fileInputRef.current.click()
+                    }
+                    style={{
+                      background: "#6C63FF",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 8,
+                      padding: "10px 24px",
+                      fontWeight: 600,
+                      fontSize: 15,
+                      cursor: imageUploading ? "not-allowed" : "pointer",
+                      opacity: imageUploading ? 0.7 : 1,
+                    }}
+                    disabled={imageUploading}
+                  >
+                    {imageUploading ? "Uploading..." : "Add Image"}
+                  </button>
+                  <span style={{ color: "#666", fontSize: 13 }}>
+                    You can also paste an image directly (Ctrl+V)
+                  </span>
+                </div>
               </div>
             ) : (
               editMode && (
@@ -1464,6 +1527,64 @@ function TradeModal({
           </div>
         )}
       </div>
+      {/* Full Size Image Modal */}
+      {showFullImage && trade.imageUrl && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.9)",
+            zIndex: 2000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowFullImage(false);
+          }}
+        >
+          <img
+            src={trade.imageUrl}
+            alt="Trade Chart Full Size"
+            style={{
+              maxWidth: "90vw",
+              maxHeight: "90vh",
+              objectFit: "contain",
+              borderRadius: 8,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowFullImage(false);
+            }}
+            style={{
+              position: "absolute",
+              top: 20,
+              right: 20,
+              background: "rgba(255,255,255,0.1)",
+              border: "none",
+              borderRadius: "50%",
+              width: 40,
+              height: 40,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              color: "#fff",
+              fontSize: 24,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
     </div>
   );
 }
