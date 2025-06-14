@@ -2,6 +2,8 @@ import { useState, useCallback } from "react";
 import { dataService } from "../services/DataService";
 import { backupService } from "../services/BackupService";
 import { useAuth } from "../contexts/AuthContext";
+import { doc, updateDoc } from "firebase/firestore";
+import { db } from "../firebase";
 
 export const useDataManagement = () => {
   const { user } = useAuth();
@@ -34,49 +36,49 @@ export const useDataManagement = () => {
     [user]
   );
 
-  const updateTrade = useCallback(
-    async (accountId, tradeId, tradeData) => {
-      if (!user) throw new Error("User not authenticated");
-      setIsLoading(true);
-      setError(null);
-      try {
-        console.log("Starting trade update process:", {
+  const updateTrade = async (accountId, tradeId, tradeData) => {
+    if (!user) throw new Error("User not authenticated");
+    try {
+      // Clean the trade data
+      const cleanTradeData = {
+        ...tradeData,
+        // Convert any object values to their primitive values
+        direction: tradeData.direction || null,
+        setups: tradeData.setups || null,
+        accountId: tradeData.accountId || null,
+        // Ensure numbers are actually numbers
+        volume: tradeData.volume ? Number(tradeData.volume) : null,
+        entryPrice: tradeData.entryPrice ? Number(tradeData.entryPrice) : null,
+        exitPrice: tradeData.exitPrice ? Number(tradeData.exitPrice) : null,
+        sl: tradeData.sl ? Number(tradeData.sl) : null,
+        commission: tradeData.commission ? Number(tradeData.commission) : null,
+        swap: tradeData.swap ? Number(tradeData.swap) : null,
+        netPnL: tradeData.netPnL ? Number(tradeData.netPnL) : null,
+        maxDrawdownR: tradeData.maxDrawdownR
+          ? Number(tradeData.maxDrawdownR)
+          : null,
+        maxRR: tradeData.maxRR ? Number(tradeData.maxRR) : null,
+      };
+
+      dataService.startBatch();
+      dataService.addOperation((batch) => {
+        const tradeRef = doc(
+          db,
+          "users",
+          user.uid,
+          "accounts",
           accountId,
-          tradeId,
-          tradeData,
-        });
-
-        await dataService.startBatch();
-        console.log("Batch started");
-
-        await dataService.updateTrade(user.uid, accountId, tradeId, tradeData);
-        console.log("Trade update operation added to batch");
-
-        const success = await dataService.commitBatch();
-        console.log("Batch commit result:", success);
-
-        if (!success) {
-          console.error("Batch commit failed");
-          throw new Error("Failed to commit trade update");
-        }
-
-        console.log("Trade update completed successfully");
-      } catch (err) {
-        console.error("Error in updateTrade:", {
-          error: err,
-          code: err.code,
-          message: err.message,
-          accountId,
-          tradeId,
-        });
-        setError(err.message);
-        throw err;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [user]
-  );
+          "trades",
+          tradeId
+        );
+        updateDoc(tradeRef, cleanTradeData);
+      });
+      const result = await dataService.commitBatch();
+      return result;
+    } catch (error) {
+      throw error;
+    }
+  };
 
   const deleteTrade = useCallback(
     async (accountId, tradeId) => {
@@ -84,30 +86,11 @@ export const useDataManagement = () => {
       setIsLoading(true);
       setError(null);
       try {
-        console.log("Starting trade deletion process:", { accountId, tradeId });
         await dataService.startBatch();
-        console.log("Batch started");
-
         await dataService.deleteTrade(user.uid, accountId, tradeId);
-        console.log("Delete operation added to batch");
-
         const success = await dataService.commitBatch();
-        console.log("Batch commit result:", success);
-
-        if (!success) {
-          console.error("Batch commit failed");
-          throw new Error("Failed to commit trade deletion");
-        }
-
-        console.log("Trade deletion completed successfully");
+        if (!success) throw new Error("Failed to commit trade deletion");
       } catch (err) {
-        console.error("Error in deleteTrade:", {
-          error: err,
-          code: err.code,
-          message: err.message,
-          accountId,
-          tradeId,
-        });
         setError(err.message);
         throw err;
       } finally {

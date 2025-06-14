@@ -284,6 +284,7 @@ export function AccountProvider({ children }) {
     selectedAccounts: accounts.filter((acc) =>
       selectedAccountIds.includes(acc.id)
     ),
+    setAccounts,
   };
 
   return (

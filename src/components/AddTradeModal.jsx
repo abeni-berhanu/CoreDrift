@@ -187,6 +187,10 @@ function AddTradeModal() {
       alert("Please select an account for the trade.");
       return;
     }
+    if (updatedForm.direction === "" || updatedForm.symbol === "") {
+      alert("Please select a symbol and direction for the trade.");
+      return;
+    }
 
     setSubmitting(true);
     try {

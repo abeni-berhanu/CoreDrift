@@ -1,11 +1,15 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import {
+  createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
-  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  deleteUser,
+  reauthenticateWithCredential,
+  EmailAuthProvider,
 } from "firebase/auth";
-import { auth } from "../firebase/config";
+import { auth } from "../firebase/index";
 
 // Error messages for different scenarios
 const ERROR_MESSAGES = {
@@ -18,140 +22,112 @@ const ERROR_MESSAGES = {
   "auth/weak-password": "Password is too weak",
 };
 
-const AuthContext = createContext(null);
+// Create the context first
+const AuthContext = createContext();
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [authError, setAuthError] = useState(null);
-  const [error, setError] = useState(null);
-
-  // Set up auth state listener
-  useEffect(() => {
-    console.log("Setting up auth state listener...");
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      (user) => {
-        console.log("Auth state changed:", user ? "User logged in" : "No user");
-        if (user) {
-          console.log("User details:", {
-            uid: user.uid,
-            email: user.email,
-            emailVerified: user.emailVerified,
-          });
-        }
-        setUser(user);
-        setLoading(false);
-      },
-      (error) => {
-        console.error("Auth state change error:", error);
-        setError(error.message);
-        setLoading(false);
-      }
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  const login = async (email, password) => {
-    console.log("Attempting login for email:", email);
-    try {
-      setAuthError(null);
-      const userCredential = await signInWithEmailAndPassword(
-        auth,
-        email,
-        password
-      );
-      console.log("Login successful - User details:", {
-        uid: userCredential.user.uid,
-        email: userCredential.user.email,
-        emailVerified: userCredential.user.emailVerified,
-        isAnonymous: userCredential.user.isAnonymous,
-        metadata: userCredential.user.metadata,
-        providerData: userCredential.user.providerData,
-      });
-      return { success: true, user: userCredential.user };
-    } catch (error) {
-      console.error("Login error:", {
-        code: error.code,
-        message: error.message,
-        fullError: error,
-      });
-      const errorMessage = ERROR_MESSAGES[error.code] || error.message;
-      setAuthError(errorMessage);
-      return { success: false, error: errorMessage };
-    }
-  };
-
-  const signup = async (email, password) => {
-    console.log("Attempting signup for email:", email);
-    try {
-      setAuthError(null);
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        email,
-        password
-      );
-      console.log("Signup successful - User details:", {
-        uid: userCredential.user.uid,
-        email: userCredential.user.email,
-        emailVerified: userCredential.user.emailVerified,
-        isAnonymous: userCredential.user.isAnonymous,
-        metadata: userCredential.user.metadata,
-        providerData: userCredential.user.providerData,
-      });
-      return { success: true, user: userCredential.user };
-    } catch (error) {
-      console.error("Signup error:", {
-        code: error.code,
-        message: error.message,
-        fullError: error,
-      });
-      const errorMessage = ERROR_MESSAGES[error.code] || error.message;
-      setAuthError(errorMessage);
-      return { success: false, error: errorMessage };
-    }
-  };
-
-  const logout = async () => {
-    console.log("Attempting logout for user:", user?.email);
-    try {
-      setAuthError(null);
-      await signOut(auth);
-      console.log("Logout successful");
-      return { success: true };
-    } catch (error) {
-      console.error("Logout error:", {
-        code: error.code,
-        message: error.message,
-        fullError: error,
-      });
-      const errorMessage = ERROR_MESSAGES[error.code] || error.message;
-      setAuthError(errorMessage);
-      return { success: false, error: errorMessage };
-    }
-  };
-
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        authError,
-        login,
-        logout,
-        signup,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
-};
-
+// Create a custom hook to use the auth context
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
     throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
+};
+
+// Then define the provider component
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // Set up auth state listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const signup = async (email, password) => {
+    try {
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+      return userCredential.user;
+    } catch (error) {
+      setError(error.message);
+      throw error;
+    }
+  };
+
+  const login = async (email, password) => {
+    try {
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+      return userCredential.user;
+    } catch (error) {
+      setError(error.message);
+      throw error;
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      setError(error.message);
+      throw error;
+    }
+  };
+
+  const resetPassword = async (email) => {
+    try {
+      await sendPasswordResetEmail(auth, email);
+    } catch (error) {
+      setError(error.message);
+      throw error;
+    }
+  };
+
+  const deleteAccount = async (password) => {
+    if (!user) {
+      throw new Error("No user is currently signed in");
+    }
+
+    try {
+      // Re-authenticate user
+      const credential = EmailAuthProvider.credential(user.email, password);
+      await reauthenticateWithCredential(user, credential);
+
+      // Delete the user
+      await deleteUser(user);
+    } catch (error) {
+      setError(error.message);
+      throw error;
+    }
+  };
+
+  const value = {
+    user,
+    loading,
+    error,
+    signup,
+    login,
+    logout,
+    resetPassword,
+    deleteAccount,
+  };
+
+  return (
+    <AuthContext.Provider value={value}>
+      {!loading && children}
+    </AuthContext.Provider>
+  );
 };

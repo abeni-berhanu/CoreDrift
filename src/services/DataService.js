@@ -23,22 +23,16 @@ class DataService {
   }
 
   // Initialize a new batch
-  async startBatch() {
-    console.log("Starting new batch operation");
+  startBatch() {
     this.batch = writeBatch(db);
-    this.operations = [];
-    console.log("Batch initialized");
   }
 
   // Add operation to batch
   addOperation(operation) {
     if (!this.batch) {
-      console.error("Attempted to add operation without starting batch");
-      throw new Error("Batch not started");
+      throw new Error("No batch in progress");
     }
-    console.log("Adding operation to batch");
-    this.operations.push(operation);
-    console.log(`Total operations in batch: ${this.operations.length}`);
+    operation(this.batch);
   }
 
   // Log error
@@ -56,40 +50,15 @@ class DataService {
   // Commit batch with error handling and retry logic
   async commitBatch() {
     if (!this.batch) {
-      console.error("Attempted to commit without starting batch");
-      throw new Error("Batch not started");
+      throw new Error("No batch in progress");
     }
-
     try {
-      console.log(`Executing ${this.operations.length} operations in batch`);
-
-      // Execute all operations
-      this.operations.forEach((operation, index) => {
-        console.log(
-          `Executing operation ${index + 1}/${this.operations.length}`
-        );
-        operation();
-      });
-
-      console.log("All operations executed, committing batch");
-      // Commit the batch
       await this.batch.commit();
-      console.log("Batch committed successfully");
-
-      // Reset batch and operations
       this.batch = null;
-      this.operations = [];
-
       return true;
     } catch (error) {
-      console.error("Error committing batch:", {
-        error,
-        code: error.code,
-        message: error.message,
-        stack: error.stack,
-      });
-      this.logError("commit_batch", error);
-      return false;
+      this.batch = null;
+      throw error;
     }
   }
 
@@ -262,8 +231,27 @@ class DataService {
           processedTradeData[field] !== ""
         ) {
           processedTradeData[field] = Number(processedTradeData[field]);
+        } else {
+          // If the field is empty or undefined, set it to null
+          processedTradeData[field] = null;
         }
       });
+
+      // Ensure tagIds is an array
+      if (processedTradeData.tagIds) {
+        processedTradeData.tagIds = Array.isArray(processedTradeData.tagIds)
+          ? processedTradeData.tagIds
+          : [];
+      }
+
+      // Ensure selectedRules is an array
+      if (processedTradeData.selectedRules) {
+        processedTradeData.selectedRules = Array.isArray(
+          processedTradeData.selectedRules
+        )
+          ? processedTradeData.selectedRules
+          : [];
+      }
 
       this.addOperation(() => this.batch.update(tradeRef, processedTradeData));
 

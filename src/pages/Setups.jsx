@@ -25,6 +25,7 @@ import {
   onSnapshot,
   updateDoc,
   deleteDoc,
+  writeBatch,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useTradeLog } from "../contexts/TradeLogContext";
@@ -36,6 +37,7 @@ import {
   fetchSetupNotes,
 } from "../components/Notes";
 import ColorPicker from "../components/ColorPicker";
+import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 
 const thStyle = {
   padding: "10px 8px",
@@ -595,6 +597,7 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [groupError, setGroupError] = useState("");
   const [showCreateRule, setShowCreateRule] = useState(null);
+  const [sortConfig, setSortConfig] = useState({ key: null, direction: "asc" });
   const [newRule, setNewRule] = useState({
     name: "",
     followRate: "",
@@ -888,35 +891,73 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
       db,
       `users/${user.uid}/setups/${setup.id}/ruleGroups`
     );
+    const q = query(groupsRef, orderBy("order", "asc"));
     let unsubRulesArr = [];
-    const unsubGroups = onSnapshot(groupsRef, (groupsSnap) => {
+    const unsubGroups = onSnapshot(q, async (groupsSnap) => {
       const groups = groupsSnap.docs.map((groupDoc) => ({
         id: groupDoc.id,
         ...groupDoc.data(),
         rules: [],
       }));
 
+      // Initialize order for groups that don't have it
+      const batch = writeBatch(db);
+      let needsUpdate = false;
+      groups.forEach((group, index) => {
+        if (group.order === undefined) {
+          const groupRef = doc(
+            db,
+            `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}`
+          );
+          batch.update(groupRef, { order: index });
+          needsUpdate = true;
+        }
+      });
+      if (needsUpdate) {
+        await batch.commit();
+      }
+
       // Remove previous rules listeners
       unsubRulesArr.forEach((unsub) => unsub());
       unsubRulesArr = [];
 
       // For each group, set up a real-time listener for its rules
-      groups.forEach((group, idx) => {
+      groups.forEach((group) => {
         const rulesRef = collection(
           db,
           `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}/rules`
         );
-        const unsubRules = onSnapshot(rulesRef, (rulesSnap) => {
+        const rulesQuery = query(rulesRef, orderBy("order", "asc"));
+        const unsubRules = onSnapshot(rulesQuery, async (rulesSnap) => {
+          const rules = rulesSnap.docs.map((ruleDoc) => ({
+            id: ruleDoc.id,
+            ...ruleDoc.data(),
+          }));
+
+          // Initialize order for rules that don't have it
+          const rulesBatch = writeBatch(db);
+          let rulesNeedUpdate = false;
+          rules.forEach((rule, index) => {
+            if (rule.order === undefined) {
+              const ruleRef = doc(
+                db,
+                `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}/rules/${rule.id}`
+              );
+              rulesBatch.update(ruleRef, { order: index });
+              rulesNeedUpdate = true;
+            }
+          });
+          if (rulesNeedUpdate) {
+            await rulesBatch.commit();
+          }
+
           setRuleGroups((prevGroups) => {
             // Find the group by id (not by idx, in case of reordering)
             const newGroups = prevGroups.map((g) =>
               g.id === group.id
                 ? {
                     ...g,
-                    rules: rulesSnap.docs.map((ruleDoc) => ({
-                      id: ruleDoc.id,
-                      ...ruleDoc.data(),
-                    })),
+                    rules: rules,
                   }
                 : g
             );
@@ -1059,7 +1100,6 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
   const handleRenameRule = (rule) => {
     setEditingRuleId(rule.id);
     setEditingRuleName(rule.name);
-    setRuleMenuOpen(null);
   };
   const handleCancelEditRule = () => {
     setEditingRuleId(null);
@@ -1124,6 +1164,146 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
       console.error("Error updating color:", err);
     } finally {
       setColorLoading(false);
+    }
+  };
+
+  // Add sort handler function
+  const handleSort = (key) => {
+    let direction = "asc";
+    if (sortConfig.key === key && sortConfig.direction === "asc") {
+      direction = "desc";
+    }
+    setSortConfig({ key, direction });
+  };
+
+  // Add sorted rules function
+  const getSortedRules = (rules) => {
+    if (!sortConfig.key) return rules;
+
+    return [...rules].sort((a, b) => {
+      let aValue = a[sortConfig.key];
+      let bValue = b[sortConfig.key];
+
+      // Handle special cases for different fields
+      if (sortConfig.key === "followRate") {
+        aValue = totalTrades > 0 ? (a.ruleTotal / totalTrades) * 100 : 0;
+        bValue = totalTrades > 0 ? (b.ruleTotal / totalTrades) * 100 : 0;
+      } else if (sortConfig.key === "netPL") {
+        aValue = a.ruleNetPL || 0;
+        bValue = b.ruleNetPL || 0;
+      } else if (sortConfig.key === "profitFactor") {
+        aValue = a.profitFactor || 0;
+        bValue = b.profitFactor || 0;
+      } else if (sortConfig.key === "winRate") {
+        aValue = a.ruleWinRate || 0;
+        bValue = b.ruleWinRate || 0;
+      }
+
+      if (aValue < bValue) {
+        return sortConfig.direction === "asc" ? -1 : 1;
+      }
+      if (aValue > bValue) {
+        return sortConfig.direction === "asc" ? 1 : -1;
+      }
+      return 0;
+    });
+  };
+
+  // Add handleDragEnd function
+  const handleDragEnd = (result) => {
+    if (!result.destination) return;
+
+    const { source, destination, type } = result;
+
+    if (type === "group") {
+      // Reorder groups
+      const newGroups = Array.from(ruleGroups);
+      const [removed] = newGroups.splice(source.index, 1);
+      newGroups.splice(destination.index, 0, removed);
+
+      // Update local state
+      setRuleGroups(newGroups);
+
+      // Update Firestore
+      const batch = writeBatch(db);
+      newGroups.forEach((group, index) => {
+        const groupRef = doc(
+          db,
+          `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}`
+        );
+        batch.update(groupRef, { order: index });
+      });
+      batch.commit().catch((err) => {
+        console.error("Error updating group order:", err);
+      });
+    } else {
+      // Reorder rules within a group
+      const sourceGroup = ruleGroups.find((g) => g.id === source.droppableId);
+      const destGroup = ruleGroups.find(
+        (g) => g.id === destination.droppableId
+      );
+
+      if (!sourceGroup || !destGroup) return;
+
+      const newSourceRules = Array.from(sourceGroup.rules);
+      const [removed] = newSourceRules.splice(source.index, 1);
+
+      if (source.droppableId === destination.droppableId) {
+        // Same group
+        newSourceRules.splice(destination.index, 0, removed);
+        const newGroups = ruleGroups.map((g) =>
+          g.id === source.droppableId ? { ...g, rules: newSourceRules } : g
+        );
+        setRuleGroups(newGroups);
+
+        // Update Firestore
+        const batch = writeBatch(db);
+        newSourceRules.forEach((rule, index) => {
+          const sourceRuleRef = doc(
+            db,
+            `users/${user.uid}/setups/${setup.id}/ruleGroups/${source.droppableId}/rules/${rule.id}`
+          );
+          batch.update(sourceRuleRef, { order: index });
+        });
+        batch.commit().catch((err) => {
+          console.error("Error updating rule order:", err);
+        });
+      } else {
+        // Different groups
+        const newDestRules = Array.from(destGroup.rules);
+        newDestRules.splice(destination.index, 0, removed);
+
+        const newGroups = ruleGroups.map((g) => {
+          if (g.id === source.droppableId) {
+            return { ...g, rules: newSourceRules };
+          }
+          if (g.id === destination.droppableId) {
+            return { ...g, rules: newDestRules };
+          }
+          return g;
+        });
+        setRuleGroups(newGroups);
+
+        // Update Firestore
+        const batch = writeBatch(db);
+        newSourceRules.forEach((rule, index) => {
+          const sourceRuleRef = doc(
+            db,
+            `users/${user.uid}/setups/${setup.id}/ruleGroups/${source.droppableId}/rules/${rule.id}`
+          );
+          batch.update(sourceRuleRef, { order: index });
+        });
+        newDestRules.forEach((rule, index) => {
+          const destRuleRef = doc(
+            db,
+            `users/${user.uid}/setups/${setup.id}/ruleGroups/${destination.droppableId}/rules/${rule.id}`
+          );
+          batch.update(destRuleRef, { order: index });
+        });
+        batch.commit().catch((err) => {
+          console.error("Error updating rule order:", err);
+        });
+      }
     }
   };
 
@@ -1589,510 +1769,598 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
               No rule groups yet. Click "Create Group" to get started!
             </div>
           ) : (
-            ruleGroups.map((group) => (
-              <div
-                key={group.id}
-                style={{
-                  marginBottom: 32,
-                  background: "#fff",
-                  borderRadius: 12,
-                  boxShadow: "0 1px 4px rgba(0,0,0,0.03)",
-                  padding: 0,
-                }}
-              >
-                {/* Group Header */}
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    borderBottom: "1px solid #f0f0f0",
-                    padding: "18px 0 18px 0",
-                    background: "#fafbfc",
-                    borderTopLeftRadius: 12,
-                    borderTopRightRadius: 12,
-                  }}
-                >
-                  <FaGripVertical
-                    style={{
-                      marginLeft: 16,
-                      marginRight: 12,
-                      color: "#bbb",
-                      fontSize: 16,
-                      cursor: "grab",
-                    }}
-                  />
-                  {editingGroupId === group.id ? (
-                    <>
-                      <input
-                        type="text"
-                        value={editingGroupName}
-                        onChange={(e) => setEditingGroupName(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleSaveEditGroup(group.id);
-                          if (e.key === "Escape") handleCancelEditGroup();
-                        }}
-                        style={{
-                          flex: 2,
-                          fontWeight: 700,
-                          fontSize: 16,
-                          padding: 4,
-                          borderRadius: 4,
-                          border: "1px solid #ccc",
-                          marginRight: 8,
-                        }}
-                        autoFocus
-                      />
-                      <button
-                        onClick={() => handleSaveEditGroup(group.id)}
-                        style={{
-                          color: "#6C63FF",
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          fontSize: 16,
-                          fontWeight: 600,
-                          marginRight: 4,
-                        }}
+            <DragDropContext onDragEnd={handleDragEnd}>
+              <Droppable droppableId="groups" type="group">
+                {(provided) => (
+                  <div {...provided.droppableProps} ref={provided.innerRef}>
+                    {ruleGroups.map((group, groupIndex) => (
+                      <Draggable
+                        key={group.id}
+                        draggableId={group.id}
+                        index={groupIndex}
                       >
-                        Save
-                      </button>
-                      <button
-                        onClick={handleCancelEditGroup}
-                        style={{
-                          color: "#888",
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          fontSize: 16,
-                          fontWeight: 600,
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <div
-                        style={{
-                          flex: 2,
-                          fontWeight: 700,
-                          fontSize: 16,
-                          display: "flex",
-                          alignItems: "center",
-                        }}
-                      >
-                        {group.name}
-                        <button
-                          onClick={() => handleEditGroup(group)}
-                          style={{
-                            marginLeft: 8,
-                            color: "#6C63FF",
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            fontSize: 14,
-                            display: "flex",
-                            alignItems: "center",
-                            opacity: 0.5,
-                            transition: "opacity 0.2s",
-                          }}
-                          onMouseEnter={(e) =>
-                            (e.currentTarget.style.opacity = 1)
-                          }
-                          onMouseLeave={(e) =>
-                            (e.currentTarget.style.opacity = 0.5)
-                          }
-                        >
-                          <FaEdit />
-                        </button>
-                        <button
-                          onClick={() => setConfirmDeleteGroupId(group.id)}
-                          style={{
-                            marginLeft: 4,
-                            color: "#cf1322",
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            fontSize: 14,
-                            display: "flex",
-                            alignItems: "center",
-                            opacity: 0.5,
-                            transition: "opacity 0.2s",
-                          }}
-                          onMouseEnter={(e) =>
-                            (e.currentTarget.style.opacity = 1)
-                          }
-                          onMouseLeave={(e) =>
-                            (e.currentTarget.style.opacity = 0.5)
-                          }
-                        >
-                          <FaTrash />
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-                {/* Rules List */}
-                {group.rules.length === 0 && (
-                  <div
-                    style={{
-                      color: "#888",
-                      textAlign: "center",
-                      padding: 12,
-                      fontSize: 13,
-                    }}
-                  >
-                    No rules yet.
-                  </div>
-                )}
-                {group.rules.map((rule) => {
-                  // --- CALCULATE STATS FOR THIS RULE ---
-                  // Only use executedTrades (already filtered for this setup)
-                  const tradesWithRule = executedTrades.filter(
-                    (t) =>
-                      Array.isArray(t.selectedRules) &&
-                      t.selectedRules.includes(rule.id)
-                  );
-                  const ruleTotal = tradesWithRule.length;
-                  const ruleNetPL = tradesWithRule.reduce(
-                    (sum, t) => sum + (Number(t.netPnL) || 0),
-                    0
-                  );
-                  const ruleWins = tradesWithRule.filter(
-                    (t) => t.status === "WIN"
-                  ).length;
-                  const ruleLosses = tradesWithRule.filter(
-                    (t) => t.status === "LOSS"
-                  ).length;
-                  const grossProfit = tradesWithRule
-                    .filter((t) => t.status === "WIN")
-                    .reduce((sum, t) => sum + (Number(t.netPnL) || 0), 0);
-                  const grossLoss = Math.abs(
-                    tradesWithRule
-                      .filter((t) => t.status === "LOSS")
-                      .reduce((sum, t) => sum + (Number(t.netPnL) || 0), 0)
-                  );
-                  const profitFactor = grossLoss
-                    ? grossProfit / grossLoss
-                    : grossProfit > 0
-                    ? Infinity
-                    : 0;
-                  const ruleWinRate = ruleTotal ? ruleWins / ruleTotal : 0;
-                  // ---
-                  return (
-                    <div
-                      key={rule.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        borderBottom: "1px solid #f0f0f0",
-                        padding: "10px 0 10px 0",
-                        fontSize: 13,
-                      }}
-                    >
-                      <FaGripVertical
-                        style={{
-                          marginLeft: 16,
-                          marginRight: 12,
-                          color: "#bbb",
-                          fontSize: 16,
-                          cursor: "grab",
-                        }}
-                      />
-                      {editingRuleId === rule.id ? (
-                        <>
-                          <input
-                            type="text"
-                            value={editingRuleName}
-                            onChange={(e) => setEditingRuleName(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter")
-                                handleSaveEditRule(group.id, rule.id);
-                              if (e.key === "Escape") handleCancelEditRule();
-                            }}
+                        {(provided, snapshot) => (
+                          <div
+                            ref={provided.innerRef}
+                            {...provided.draggableProps}
                             style={{
-                              flex: 2,
-                              fontSize: 13,
-                              padding: 5,
-                              borderRadius: 4,
-                              border: "1px solid #ccc",
-                              marginRight: 8,
-                            }}
-                            autoFocus
-                          />
-                          <button
-                            onClick={() =>
-                              handleSaveEditRule(group.id, rule.id)
-                            }
-                            style={{
-                              color: "#6C63FF",
-                              background: "none",
-                              border: "none",
-                              cursor: "pointer",
-                              fontSize: 16,
-                              fontWeight: 600,
-                              marginRight: 4,
+                              ...provided.draggableProps.style,
+                              marginBottom: 32,
+                              background: "#fff",
+                              borderRadius: 12,
+                              boxShadow: "0 1px 4px rgba(0,0,0,0.03)",
+                              padding: 0,
                             }}
                           >
-                            Save
-                          </button>
-                          <button
-                            onClick={handleCancelEditRule}
-                            style={{
-                              color: "#888",
-                              background: "none",
-                              border: "none",
-                              cursor: "pointer",
-                              fontSize: 16,
-                              fontWeight: 600,
-                            }}
-                          >
-                            Cancel
-                          </button>
-                        </>
-                      ) : (
-                        <div style={{ flex: 2 }}>{rule.name}</div>
-                      )}
-                      <div
-                        style={{
-                          flex: 1,
-                          textAlign: "right",
-                          color: "#3b5cff",
-                          fontWeight: 600,
-                          paddingRight: 16,
-                        }}
-                      >
-                        {totalTrades > 0
-                          ? `${((ruleTotal / totalTrades) * 100).toFixed(1)} %`
-                          : "-"}
-                      </div>
-                      <div
-                        style={{
-                          flex: 1,
-                          textAlign: "right",
-                          paddingRight: 16,
-                        }}
-                      >
-                        {`$${(ruleNetPL || 0).toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}`}
-                      </div>
-                      <div
-                        style={{
-                          flex: 1,
-                          textAlign: "right",
-                          paddingRight: 16,
-                        }}
-                      >
-                        {profitFactor === Infinity
-                          ? "∞"
-                          : profitFactor.toFixed(2)}
-                      </div>
-                      <div
-                        style={{
-                          flex: 1,
-                          textAlign: "right",
-                          paddingRight: 16,
-                        }}
-                      >
-                        {ruleTotal > 0
-                          ? `${(ruleWinRate * 100).toFixed(2)} %`
-                          : "-"}
-                      </div>
-                      <div
-                        style={{
-                          width: 40,
-                          textAlign: "center",
-                          position: "relative",
-                        }}
-                      >
-                        <FaEllipsisV
-                          style={{
-                            color: "#888",
-                            fontSize: 16,
-                            cursor: "pointer",
-                          }}
-                          onClick={() =>
-                            setRuleMenuOpen(
-                              ruleMenuOpen &&
-                                ruleMenuOpen.groupId === group.id &&
-                                ruleMenuOpen.ruleId === rule.id
-                                ? null
-                                : { groupId: group.id, ruleId: rule.id }
-                            )
-                          }
-                        />
-                        {ruleMenuOpen &&
-                          ruleMenuOpen.groupId === group.id &&
-                          ruleMenuOpen.ruleId === rule.id && (
+                            {/* Group Header */}
                             <div
                               style={{
-                                position: "absolute",
-                                right: 0,
-                                top: 24,
-                                background: "#fff",
-                                border: "1px solid #eee",
-                                borderRadius: 6,
-                                boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-                                zIndex: 10,
+                                display: "flex",
+                                alignItems: "center",
+                                borderBottom: "1px solid #f0f0f0",
+                                padding: "18px 0 18px 0",
+                                background: "#fafbfc",
+                                borderTopLeftRadius: 12,
+                                borderTopRightRadius: 12,
                               }}
                             >
-                              <button
-                                onClick={() => handleRenameRule(rule)}
-                                style={{
-                                  display: "block",
-                                  padding: "8px 16px",
-                                  background: "none",
-                                  border: "none",
-                                  width: "100%",
-                                  textAlign: "left",
-                                  cursor: "pointer",
-                                  fontSize: 14,
-                                }}
-                              >
-                                Rename
-                              </button>
-                              <button
-                                onClick={() =>
-                                  setConfirmDeleteRule({
-                                    groupId: group.id,
-                                    ruleId: rule.id,
-                                  })
-                                }
-                                style={{
-                                  display: "block",
-                                  padding: "8px 16px",
-                                  background: "none",
-                                  border: "none",
-                                  width: "100%",
-                                  textAlign: "left",
-                                  color: "#cf1322",
-                                  cursor: "pointer",
-                                  fontSize: 14,
-                                }}
-                              >
-                                Delete
-                              </button>
+                              <div {...provided.dragHandleProps}>
+                                <FaGripVertical
+                                  style={{
+                                    marginLeft: 16,
+                                    marginRight: 12,
+                                    color: "#bbb",
+                                    fontSize: 16,
+                                    cursor: "grab",
+                                  }}
+                                />
+                              </div>
+                              {editingGroupId === group.id ? (
+                                <>
+                                  <input
+                                    type="text"
+                                    value={editingGroupName}
+                                    onChange={(e) =>
+                                      setEditingGroupName(e.target.value)
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter")
+                                        handleSaveEditGroup(group.id);
+                                      if (e.key === "Escape")
+                                        handleCancelEditGroup();
+                                    }}
+                                    style={{
+                                      flex: 2,
+                                      fontWeight: 700,
+                                      fontSize: 16,
+                                      padding: 4,
+                                      borderRadius: 4,
+                                      border: "1px solid #ccc",
+                                      marginRight: 8,
+                                    }}
+                                    autoFocus
+                                  />
+                                  <button
+                                    onClick={() =>
+                                      handleSaveEditGroup(group.id)
+                                    }
+                                    style={{
+                                      color: "#6C63FF",
+                                      background: "none",
+                                      border: "none",
+                                      cursor: "pointer",
+                                      fontSize: 16,
+                                      fontWeight: 600,
+                                      marginRight: 4,
+                                    }}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={handleCancelEditGroup}
+                                    style={{
+                                      color: "#888",
+                                      background: "none",
+                                      border: "none",
+                                      cursor: "pointer",
+                                      fontSize: 16,
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <div style={{ flex: 1 }}>{group.name}</div>
+                                  <div style={{ flex: 1 }}>
+                                    <button
+                                      onClick={() => handleEditGroup(group)}
+                                      style={{
+                                        marginLeft: 8,
+                                        color: "#6C63FF",
+                                        background: "none",
+                                        border: "none",
+                                        cursor: "pointer",
+                                        fontSize: 14,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        opacity: 0.5,
+                                        transition: "opacity 0.2s",
+                                      }}
+                                      onMouseEnter={(e) =>
+                                        (e.currentTarget.style.opacity = 1)
+                                      }
+                                      onMouseLeave={(e) =>
+                                        (e.currentTarget.style.opacity = 0.5)
+                                      }
+                                    >
+                                      <FaEdit />
+                                    </button>
+                                    <button
+                                      onClick={() =>
+                                        setConfirmDeleteGroupId(group.id)
+                                      }
+                                      style={{
+                                        marginLeft: 4,
+                                        color: "#cf1322",
+                                        background: "none",
+                                        border: "none",
+                                        cursor: "pointer",
+                                        fontSize: 14,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        opacity: 0.5,
+                                        transition: "opacity 0.2s",
+                                      }}
+                                      onMouseEnter={(e) =>
+                                        (e.currentTarget.style.opacity = 1)
+                                      }
+                                      onMouseLeave={(e) =>
+                                        (e.currentTarget.style.opacity = 0.5)
+                                      }
+                                    >
+                                      <FaTrash />
+                                    </button>
+                                  </div>
+                                </>
+                              )}
                             </div>
-                          )}
-                      </div>
-                    </div>
-                  );
-                })}
-                {/* Inline Create Rule Form */}
-                {showCreateRule === group.id ? (
-                  <form
-                    onSubmit={(e) => handleCreateRule(e, group.id)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      borderBottom: "1px solid #f0f0f0",
-                      padding: "10px 0 10px 0",
-                      background: "#f8f9fa",
-                    }}
-                  >
-                    <FaGripVertical
-                      style={{
-                        marginLeft: 16,
-                        marginRight: 12,
-                        color: "#bbb",
-                        fontSize: 16,
-                      }}
-                    />
-                    <input
-                      type="text"
-                      value={newRule.name}
-                      onChange={(e) =>
-                        setNewRule({ ...newRule, name: e.target.value })
-                      }
-                      placeholder="Rule Name"
-                      style={{
-                        flex: 2,
-                        fontSize: 13,
-                        padding: 5,
-                        borderRadius: 4,
-                        border: "1px solid #ccc",
-                        marginRight: 8,
-                      }}
-                      required
-                    />
-                    <div style={{ width: 40, textAlign: "center" }}>
-                      <button
-                        type="submit"
-                        disabled={creatingRule}
-                        style={{
-                          background: "#6C63FF",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: 6,
-                          padding: "5px 10px",
-                          fontWeight: 600,
-                          fontSize: 13,
-                          cursor: creatingRule ? "not-allowed" : "pointer",
-                        }}
-                      >
-                        Add
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowCreateRule(null)}
-                        style={{
-                          background: "#eee",
-                          color: "#888",
-                          border: "none",
-                          borderRadius: 6,
-                          padding: "5px 10px",
-                          fontWeight: 600,
-                          fontSize: 13,
-                          marginLeft: 4,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
-                ) : (
-                  <button
-                    onClick={() => {
-                      setShowCreateRule(group.id);
-                      setNewRule({
-                        name: "",
-                        followRate: "",
-                        netPL: "",
-                        profitFactor: "",
-                        winRate: "",
-                      });
-                      setRuleError("");
-                    }}
-                    style={{
-                      color: "#6C63FF",
-                      background: "none",
-                      border: "none",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      margin: "10px 0 10px 56px",
-                      fontSize: 13,
-                    }}
-                  >
-                    + Create new rule
-                  </button>
-                )}
-                {ruleError && showCreateRule === group.id && (
-                  <div
-                    style={{
-                      color: "#cf1322",
-                      marginLeft: 56,
-                      marginBottom: 8,
-                      fontSize: 13,
-                    }}
-                  >
-                    {ruleError}
+                            {/* Rules List */}
+                            {group.rules.length === 0 && (
+                              <div
+                                style={{
+                                  color: "#888",
+                                  textAlign: "center",
+                                  padding: 12,
+                                  fontSize: 13,
+                                }}
+                              >
+                                No rules yet.
+                              </div>
+                            )}
+                            <Droppable droppableId={group.id}>
+                              {(provided) => (
+                                <div
+                                  {...provided.droppableProps}
+                                  ref={provided.innerRef}
+                                >
+                                  {group.rules.map((rule, index) => {
+                                    // Calculate stats for this rule
+                                    const tradesWithRule =
+                                      executedTrades.filter(
+                                        (t) =>
+                                          Array.isArray(t.selectedRules) &&
+                                          t.selectedRules.includes(rule.id)
+                                      );
+                                    const ruleTotal = tradesWithRule.length;
+                                    const ruleNetPL = tradesWithRule.reduce(
+                                      (sum, t) => sum + (Number(t.netPnL) || 0),
+                                      0
+                                    );
+                                    const ruleWins = tradesWithRule.filter(
+                                      (t) => t.status === "WIN"
+                                    ).length;
+                                    const grossProfit = tradesWithRule
+                                      .filter((t) => t.status === "WIN")
+                                      .reduce(
+                                        (sum, t) =>
+                                          sum + (Number(t.netPnL) || 0),
+                                        0
+                                      );
+                                    const grossLoss = Math.abs(
+                                      tradesWithRule
+                                        .filter((t) => t.status === "LOSS")
+                                        .reduce(
+                                          (sum, t) =>
+                                            sum + (Number(t.netPnL) || 0),
+                                          0
+                                        )
+                                    );
+                                    const profitFactor = grossLoss
+                                      ? grossProfit / grossLoss
+                                      : grossProfit > 0
+                                      ? Infinity
+                                      : 0;
+                                    const ruleWinRate = ruleTotal
+                                      ? ruleWins / ruleTotal
+                                      : 0;
+
+                                    return (
+                                      <Draggable
+                                        key={rule.id}
+                                        draggableId={rule.id}
+                                        index={index}
+                                      >
+                                        {(provided, snapshot) => (
+                                          <div
+                                            ref={provided.innerRef}
+                                            {...provided.draggableProps}
+                                            style={{
+                                              ...provided.draggableProps.style,
+                                              display: "flex",
+                                              alignItems: "center",
+                                              borderBottom: "1px solid #f0f0f0",
+                                              padding: "10px 0 10px 0",
+                                              fontSize: 13,
+                                              background: snapshot.isDragging
+                                                ? "#f8f9fa"
+                                                : "transparent",
+                                            }}
+                                          >
+                                            <div {...provided.dragHandleProps}>
+                                              <FaGripVertical
+                                                style={{
+                                                  marginLeft: 16,
+                                                  marginRight: 12,
+                                                  color: "#bbb",
+                                                  fontSize: 16,
+                                                  cursor: "grab",
+                                                }}
+                                              />
+                                            </div>
+                                            {editingRuleId === rule.id ? (
+                                              <>
+                                                <input
+                                                  type="text"
+                                                  value={editingRuleName}
+                                                  onChange={(e) =>
+                                                    setEditingRuleName(
+                                                      e.target.value
+                                                    )
+                                                  }
+                                                  onKeyDown={(e) => {
+                                                    if (e.key === "Enter")
+                                                      handleSaveEditRule(
+                                                        group.id,
+                                                        rule.id
+                                                      );
+                                                    if (e.key === "Escape")
+                                                      handleCancelEditRule();
+                                                  }}
+                                                  style={{
+                                                    flex: 2,
+                                                    fontSize: 13,
+                                                    padding: 5,
+                                                    borderRadius: 4,
+                                                    border: "1px solid #ccc",
+                                                    marginRight: 8,
+                                                  }}
+                                                  autoFocus
+                                                />
+                                                <button
+                                                  onClick={() =>
+                                                    handleSaveEditRule(
+                                                      group.id,
+                                                      rule.id
+                                                    )
+                                                  }
+                                                  style={{
+                                                    color: "#6C63FF",
+                                                    background: "none",
+                                                    border: "none",
+                                                    cursor: "pointer",
+                                                    fontSize: 16,
+                                                    fontWeight: 600,
+                                                    marginRight: 4,
+                                                  }}
+                                                >
+                                                  Save
+                                                </button>
+                                                <button
+                                                  onClick={handleCancelEditRule}
+                                                  style={{
+                                                    color: "#888",
+                                                    background: "none",
+                                                    border: "none",
+                                                    cursor: "pointer",
+                                                    fontSize: 16,
+                                                    fontWeight: 600,
+                                                  }}
+                                                >
+                                                  Cancel
+                                                </button>
+                                              </>
+                                            ) : (
+                                              <div style={{ flex: 2 }}>
+                                                {rule.name}
+                                              </div>
+                                            )}
+                                            <div
+                                              style={{
+                                                flex: 1,
+                                                textAlign: "right",
+                                                color: "#3b5cff",
+                                                fontWeight: 600,
+                                                paddingRight: 16,
+                                              }}
+                                            >
+                                              {totalTrades > 0
+                                                ? `${(
+                                                    (ruleTotal / totalTrades) *
+                                                    100
+                                                  ).toFixed(1)} %`
+                                                : "-"}
+                                            </div>
+                                            <div
+                                              style={{
+                                                flex: 1,
+                                                textAlign: "right",
+                                                paddingRight: 16,
+                                              }}
+                                            >
+                                              {`$${(
+                                                ruleNetPL || 0
+                                              ).toLocaleString(undefined, {
+                                                minimumFractionDigits: 2,
+                                                maximumFractionDigits: 2,
+                                              })}`}
+                                            </div>
+                                            <div
+                                              style={{
+                                                flex: 1,
+                                                textAlign: "right",
+                                                paddingRight: 16,
+                                              }}
+                                            >
+                                              {profitFactor === Infinity
+                                                ? "∞"
+                                                : profitFactor.toFixed(2)}
+                                            </div>
+                                            <div
+                                              style={{
+                                                flex: 1,
+                                                textAlign: "right",
+                                                paddingRight: 16,
+                                              }}
+                                            >
+                                              {ruleTotal > 0
+                                                ? `${(
+                                                    ruleWinRate * 100
+                                                  ).toFixed(2)} %`
+                                                : "-"}
+                                            </div>
+                                            <div
+                                              style={{
+                                                width: 40,
+                                                textAlign: "center",
+                                                position: "relative",
+                                              }}
+                                            >
+                                              <FaEllipsisV
+                                                style={{
+                                                  color: "#888",
+                                                  fontSize: 16,
+                                                  cursor: "pointer",
+                                                }}
+                                                onClick={() =>
+                                                  setRuleMenuOpen(
+                                                    ruleMenuOpen &&
+                                                      ruleMenuOpen.groupId ===
+                                                        group.id &&
+                                                      ruleMenuOpen.ruleId ===
+                                                        rule.id
+                                                      ? null
+                                                      : {
+                                                          groupId: group.id,
+                                                          ruleId: rule.id,
+                                                        }
+                                                  )
+                                                }
+                                              />
+                                              {ruleMenuOpen &&
+                                                ruleMenuOpen.groupId ===
+                                                  group.id &&
+                                                ruleMenuOpen.ruleId ===
+                                                  rule.id && (
+                                                  <div
+                                                    style={{
+                                                      position: "absolute",
+                                                      right: 0,
+                                                      top: 24,
+                                                      background: "#fff",
+                                                      border: "1px solid #eee",
+                                                      borderRadius: 6,
+                                                      boxShadow:
+                                                        "0 2px 8px rgba(0,0,0,0.08)",
+                                                      zIndex: 10,
+                                                    }}
+                                                  >
+                                                    <button
+                                                      onClick={() =>
+                                                        handleRenameRule(rule)
+                                                      }
+                                                      style={{
+                                                        display: "block",
+                                                        padding: "8px 16px",
+                                                        background: "none",
+                                                        border: "none",
+                                                        width: "100%",
+                                                        textAlign: "left",
+                                                        cursor: "pointer",
+                                                        fontSize: 14,
+                                                      }}
+                                                    >
+                                                      Rename
+                                                    </button>
+                                                    <button
+                                                      onClick={() =>
+                                                        setConfirmDeleteRule({
+                                                          groupId: group.id,
+                                                          ruleId: rule.id,
+                                                        })
+                                                      }
+                                                      style={{
+                                                        display: "block",
+                                                        padding: "8px 16px",
+                                                        background: "none",
+                                                        border: "none",
+                                                        width: "100%",
+                                                        textAlign: "left",
+                                                        color: "#cf1322",
+                                                        cursor: "pointer",
+                                                        fontSize: 14,
+                                                      }}
+                                                    >
+                                                      Delete
+                                                    </button>
+                                                  </div>
+                                                )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </Draggable>
+                                    );
+                                  })}
+                                  {provided.placeholder}
+                                </div>
+                              )}
+                            </Droppable>
+                            {/* Inline Create Rule Form */}
+                            {showCreateRule === group.id ? (
+                              <form
+                                onSubmit={(e) => handleCreateRule(e, group.id)}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  borderBottom: "1px solid #f0f0f0",
+                                  padding: "10px 0 10px 0",
+                                  background: "#f8f9fa",
+                                }}
+                              >
+                                <FaGripVertical
+                                  style={{
+                                    marginLeft: 16,
+                                    marginRight: 12,
+                                    color: "#bbb",
+                                    fontSize: 16,
+                                  }}
+                                />
+                                <input
+                                  type="text"
+                                  value={newRule.name}
+                                  onChange={(e) =>
+                                    setNewRule({
+                                      ...newRule,
+                                      name: e.target.value,
+                                    })
+                                  }
+                                  placeholder="Rule Name"
+                                  style={{
+                                    flex: 2,
+                                    fontSize: 13,
+                                    padding: 5,
+                                    borderRadius: 4,
+                                    border: "1px solid #ccc",
+                                    marginRight: 8,
+                                  }}
+                                  required
+                                />
+                                <div style={{ width: 40, textAlign: "center" }}>
+                                  <button
+                                    type="submit"
+                                    disabled={creatingRule}
+                                    style={{
+                                      background: "#6C63FF",
+                                      color: "#fff",
+                                      border: "none",
+                                      borderRadius: 6,
+                                      padding: "5px 10px",
+                                      fontWeight: 600,
+                                      fontSize: 13,
+                                      cursor: creatingRule
+                                        ? "not-allowed"
+                                        : "pointer",
+                                    }}
+                                  >
+                                    Add
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowCreateRule(null)}
+                                    style={{
+                                      background: "#eee",
+                                      color: "#888",
+                                      border: "none",
+                                      borderRadius: 6,
+                                      padding: "5px 10px",
+                                      fontWeight: 600,
+                                      fontSize: 13,
+                                      marginLeft: 4,
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </form>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  setShowCreateRule(group.id);
+                                  setNewRule({
+                                    name: "",
+                                    followRate: "",
+                                    netPL: "",
+                                    profitFactor: "",
+                                    winRate: "",
+                                  });
+                                  setRuleError("");
+                                }}
+                                style={{
+                                  color: "#6C63FF",
+                                  background: "none",
+                                  border: "none",
+                                  fontWeight: 600,
+                                  cursor: "pointer",
+                                  margin: "10px 0 10px 56px",
+                                  fontSize: 13,
+                                }}
+                              >
+                                + Create new rule
+                              </button>
+                            )}
+                            {ruleError && showCreateRule === group.id && (
+                              <div
+                                style={{
+                                  color: "#cf1322",
+                                  marginLeft: 56,
+                                  marginBottom: 8,
+                                  fontSize: 13,
+                                }}
+                              >
+                                {ruleError}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </Draggable>
+                    ))}
+                    {provided.placeholder}
                   </div>
                 )}
-              </div>
-            ))
+              </Droppable>
+            </DragDropContext>
           )}
           {/* Create Group Modal */}
           <Modal

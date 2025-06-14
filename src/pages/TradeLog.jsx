@@ -378,6 +378,15 @@ function TradeLog() {
   const [trades, setTrades] = useState([]);
   const { setTrades: setGlobalTrades } = useTradeLog();
   const [loading, setLoading] = useState(true);
+  const [showTradeModal, setShowTradeModal] = useState(false);
+  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [filters, setFilters] = useState({
+    winLoss: null,
+    tradingHour: null,
+    symbol: null,
+    direction: null,
+    setup: null,
+  });
   const [calculatedSummaryData, setCalculatedSummaryData] = useState(
     initialSummaryStructure.map((s) => ({
       ...s,
@@ -391,7 +400,7 @@ function TradeLog() {
 
   const { user } = useAuth();
   const { accounts, selectedAccountIds } = useAccount();
-  const { startDate, endDate } = useDateRange();
+  const { startDate, endDate, setStartDate, setEndDate } = useDateRange();
 
   const [csvFile, setCsvFile] = useState(null);
   const [isProcessingCsv, setIsProcessingCsv] = useState(false);
@@ -777,95 +786,100 @@ function TradeLog() {
     }
   };
 
-  useEffect(() => {
+  const fetchTrades = async () => {
     if (!user || !user.email || accounts.length === 0) {
       setTrades([]);
       setGlobalTrades([]);
       setLoading(false);
-      setCalculatedSummaryData(
-        initialSummaryStructure.map((s) => ({
-          ...s,
-          value: s.label.includes("P&L")
-            ? "$0.00"
-            : s.label.includes("Win %")
-            ? "0%"
-            : "N/A",
-        }))
-      );
       return;
     }
 
-    setLoading(true);
-    const unsubscribes = [];
+    try {
+      setLoading(true);
 
-    const accountIdToNameMap = accounts.reduce((acc, current) => {
-      acc[current.id] = current.name;
-      return acc;
-    }, {});
-
-    // Use all accounts if none selected (All Accounts)
-    const accountIdsToFetch =
-      selectedAccountIds.length === 0
-        ? accounts.map((a) => a.id)
-        : selectedAccountIds;
-
-    if (accountIdsToFetch.length === 0) {
+      // Clear existing trades and unsubscribes
       setTrades([]);
       setGlobalTrades([]);
-      setLoading(false);
-      return;
-    }
 
-    // Clear existing trades when account selection changes
-    setTrades([]);
-    setGlobalTrades([]);
+      // Clean up any existing listeners
+      if (window.tradeUnsubscribes) {
+        window.tradeUnsubscribes.forEach((unsub) => unsub());
+      }
+      window.tradeUnsubscribes = [];
 
-    accountIdsToFetch.forEach((accountId) => {
-      const tradesPath = `users/${user.uid}/accounts/${accountId}/trades`;
-      let tradesQuery = query(collection(db, tradesPath));
+      // Use selected accounts or all accounts
+      const accountIdsToFetch =
+        selectedAccountIds.length > 0
+          ? selectedAccountIds
+          : accounts.map((a) => a.id);
 
-      if (startDate) {
-        try {
+      if (accountIdsToFetch.length === 0) {
+        setLoading(false);
+        return;
+      }
+
+      accountIdsToFetch.forEach((accountId) => {
+        const tradesPath = `users/${user.uid}/accounts/${accountId}/trades`;
+        let tradesQuery = query(collection(db, tradesPath));
+
+        // Add date range filters if selected
+        if (startDate) {
+          const startOfDay = new Date(startDate);
+          startOfDay.setHours(0, 0, 0, 0);
           tradesQuery = query(
             tradesQuery,
-            where(
-              "entryTimestamp",
-              ">=",
-              Timestamp.fromDate(new Date(startDate))
-            )
+            where("entryTimestamp", ">=", Timestamp.fromDate(startOfDay))
           );
-        } catch (e) {
-          console.error("Error creating start date timestamp:", e);
         }
-      }
-      if (endDate) {
-        try {
+        if (endDate) {
           const endOfDay = new Date(endDate);
           endOfDay.setHours(23, 59, 59, 999);
           tradesQuery = query(
             tradesQuery,
             where("entryTimestamp", "<=", Timestamp.fromDate(endOfDay))
           );
-        } catch (e) {
-          console.error("Error creating end date timestamp:", e);
         }
-      }
-      tradesQuery = query(tradesQuery, orderBy("entryTimestamp", "desc"));
 
-      const unsubscribe = onSnapshot(
-        tradesQuery,
-        (querySnapshot) => {
+        // Add symbol filter if selected
+        if (filters.symbol) {
+          tradesQuery = query(
+            tradesQuery,
+            where("symbol", "==", filters.symbol)
+          );
+        }
+
+        // Add direction filter if selected
+        if (filters.direction) {
+          tradesQuery = query(
+            tradesQuery,
+            where("direction", "==", filters.direction)
+          );
+        }
+
+        // Add setup filter if selected
+        if (filters.setup) {
+          tradesQuery = query(
+            tradesQuery,
+            where("setupId", "==", filters.setup)
+          );
+        }
+
+        tradesQuery = query(tradesQuery, orderBy("entryTimestamp", "desc"));
+
+        const unsubscribe = onSnapshot(tradesQuery, (querySnapshot) => {
           const accountTrades = querySnapshot.docs.map((doc) => ({
             id: doc.id,
             ...doc.data(),
-            accountName: accountIdToNameMap[accountId] || "Unknown Account",
+            accountName:
+              accounts.find((a) => a.id === accountId)?.name ||
+              "Unknown Account",
             accountId: accountId,
           }));
 
           setTrades((prevTrades) => {
-            // Remove trades from accounts that are no longer selected
-            const filteredPrevTrades = prevTrades.filter((t) =>
-              accountIdsToFetch.includes(t.accountId)
+            // Remove trades from this account
+            const filteredPrevTrades = prevTrades.filter(
+              (t) => t.accountId !== accountId
             );
 
             // Add new trades from this account
@@ -894,26 +908,57 @@ function TradeLog() {
               return timeB - timeA;
             });
 
-            setGlobalTrades(combined); // Update global trades
-            return combined;
-          });
-          setLoading(false);
-        },
-        (error) => {
-          console.error(
-            `Error fetching trades for account ${accountId} from ${tradesPath}:`,
-            error
-          );
-          setLoading(false);
-        }
-      );
-      unsubscribes.push(unsubscribe);
-    });
+            // Apply win/loss and trading hour filters in memory
+            let filteredTrades = combined;
 
+            if (filters.winLoss) {
+              filteredTrades = filteredTrades.filter((trade) => {
+                const isWin = trade.netPnL > 0;
+                return filters.winLoss === "Win" ? isWin : !isWin;
+              });
+            }
+
+            if (filters.tradingHour) {
+              filteredTrades = filteredTrades.filter((trade) => {
+                const hour = trade.entryTimestamp.toDate().getHours();
+                return hour === parseInt(filters.tradingHour);
+              });
+            }
+
+            setGlobalTrades(filteredTrades);
+            return filteredTrades;
+          });
+        });
+
+        window.tradeUnsubscribes.push(unsubscribe);
+      });
+
+      setLoading(false);
+    } catch (error) {
+      console.error("Error fetching trades:", error);
+      setLoading(false);
+    }
+  };
+
+  // Remove handleAccountSelect since we're using selectedAccountIds from useAccount
+  const handleDateRangeChange = (start, end) => {
+    setStartDate(start);
+    setEndDate(end);
+  };
+
+  // Clean up listeners when component unmounts
+  useEffect(() => {
     return () => {
-      unsubscribes.forEach((unsub) => unsub());
+      if (window.tradeUnsubscribes) {
+        window.tradeUnsubscribes.forEach((unsub) => unsub());
+      }
     };
-  }, [user, selectedAccountIds, startDate, endDate, accounts, setGlobalTrades]);
+  }, []);
+
+  // Fetch trades when user, selectedAccountIds, date range, or filters change
+  useEffect(() => {
+    fetchTrades();
+  }, [user, selectedAccountIds, startDate, endDate, filters, accounts]);
 
   useEffect(() => {
     if (trades.length === 0 && !loading) {

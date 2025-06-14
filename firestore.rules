@@ -9,54 +9,129 @@ service cloud.firestore {
       allow read: if request.auth != null;
     }
 
-    // User document rules
-    match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-      
-      // Account subcollection rules
-      match /accounts/{accountId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-        
-        // Trade subcollection rules
-        match /trades/{tradeId} {
-          allow read, write: if request.auth != null && request.auth.uid == userId;
-        }
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
 
-        // Deleted trades subcollection rules
-        match /deletedTrades/{tradeId} {
-          allow read, write: if request.auth != null && request.auth.uid == userId;
+    // Helper function to validate tag IDs
+    function isValidTagId(userId, tagId) {
+      return exists(/databases/$(database)/documents/users/$(userId)/noteTags/$(tagId));
+    }
+
+    // Helper function to validate tag IDs array
+    function areValidTagIds(userId, tagIds) {
+      return tagIds is list && tagIds.size() <= 10;
+    }
+
+    // User profile rules
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+      
+      // Custom mistakes rules
+      match /customMistakes/{mistakeId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Tags rules
+      match /tags/{tagId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Note tags rules
+      match /noteTags/{tagId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Notes and Journal Notes rules
+      match /{collection}/{noteId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId);
+        allow delete: if isOwner(userId);
+      }
+
+      // Accounts rules
+      match /accounts/{accountId} {
+        allow read, write: if isOwner(userId);
+
+        // Trades rules
+        match /trades/{tradeId} {
+          allow read, write: if isOwner(userId);
         }
       }
-      
-      // Setup subcollection rules
+
+      // Setups rules
       match /setups/{setupId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-        
-        // Allow all subcollections and documents (including ruleGroups and rules)
-        match /{document=**} {
-          allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
+
+        // Rule groups
+        match /ruleGroups/{groupId} {
+          allow read, write: if isOwner(userId);
+
+          // Rules
+          match /rules/{ruleId} {
+            allow read, write: if isOwner(userId);
+          }
         }
       }
       
       // Journal entries subcollection
-      match /journal/{entryId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+      match /journal/{journalId} {
+        allow read, write: if isOwner(userId);
       }
       
       // Notes subcollection
       match /notes/{noteId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
 
       // Notebooks subcollection
       match /notebooks/{notebookId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
       }
 
       // Journal notes subcollection
       match /journalNotes/{noteId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
+
+      // Trade tags collection
+      match /tradeTags/{tagId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Rules for trade tags
+    match /tradeTags/{tagId} {
+      // Anyone can read tags
+      allow read: if request.auth != null;
+      
+      // Only authenticated users can create tags
+      allow create: if request.auth != null 
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.usageCount is number;
+      
+      // Only the creator can delete their own tags
+      allow delete: if request.auth != null 
+        && resource.data.createdBy == request.auth.uid;
+      
+      // Only the creator can update their own tags
+      allow update: if request.auth != null 
+        && resource.data.createdBy == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name', 'usageCount']);
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 } 

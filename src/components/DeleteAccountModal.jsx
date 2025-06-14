@@ -10,14 +10,8 @@ const DeleteAccountModal = () => {
   } = useAccount();
 
   if (!deleteConfirmation) {
-    console.log("DeleteAccountModal: No confirmation data, not rendering");
     return null;
   }
-
-  console.log(
-    "DeleteAccountModal: Rendering with confirmation:",
-    deleteConfirmation
-  );
 
   const handleConfirm = () => {
     console.log("DeleteAccountModal: Confirm button clicked");

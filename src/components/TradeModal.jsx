@@ -25,6 +25,12 @@ import {
   collection,
   addDoc,
   getDocs,
+  serverTimestamp,
+  deleteDoc,
+  query,
+  where,
+  orderBy,
+  onSnapshot,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import MinimalSelect from "./MinimalSelect";
@@ -38,6 +44,7 @@ import { useDataManagement } from "../hooks/useDataManagement";
 import { getSymbols } from "../services/SymbolService";
 import { supabase } from "../supabase";
 import Modal from "react-modal";
+import TagManager from "./TagManager";
 
 const directionOptions = ["Buy", "Sell"];
 
@@ -115,8 +122,6 @@ function TradeModal({
   isPreviewMode = false,
   onPreviewSave,
 }) {
-  console.log("TradeModal render");
-
   const [editMode, setEditMode] = useState(editModeProp);
   const [trade, setTrade] = useState(initialTrade || {});
   const [showNotesModal, setShowNotesModal] = useState(false);
@@ -143,6 +148,8 @@ function TradeModal({
     trade.selectedRules || []
   );
   const [showFullImage, setShowFullImage] = useState(false);
+  const [availableTags, setAvailableTags] = useState([]);
+  const [authReady, setAuthReady] = useState(false);
 
   // Define which fields are inputs and which are calculated
   const inputFields = [
@@ -161,6 +168,7 @@ function TradeModal({
     "accountName",
     "maxDrawdownR",
     "maxRR",
+    "tagIds",
   ];
 
   const calculatedFields = [
@@ -181,30 +189,24 @@ function TradeModal({
 
   // Memoize the rule checkbox change handler
   const handleRuleCheckboxChange = useCallback((ruleId) => {
-    console.log("handleRuleCheckboxChange called with:", ruleId);
     setLocalSelectedRules((prev) => {
       const newRules = prev.includes(ruleId)
         ? prev.filter((id) => id !== ruleId)
         : [...prev, ruleId];
-      console.log("New localSelectedRules:", newRules);
       return newRules;
     });
   }, []);
 
   // Memoize the close dropdown handler
   const handleCloseRulesDropdown = useCallback(() => {
-    console.log("handleCloseRulesDropdown called");
-    console.log("Current localSelectedRules:", localSelectedRules);
     setShowRulesDropdown(false);
     setTrade((prev) => {
       const newTrade = { ...prev, selectedRules: localSelectedRules };
-      console.log("New trade state:", newTrade);
+      if (onChange) {
+        onChange(newTrade);
+      }
       return newTrade;
     });
-    if (onChange) {
-      console.log("Calling onChange with new rules");
-      onChange({ ...trade, selectedRules: localSelectedRules });
-    }
   }, [localSelectedRules, onChange, trade]);
 
   // Memoize the open dropdown handler
@@ -212,11 +214,9 @@ function TradeModal({
     async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      console.log("handleOpenRulesDropdown called");
       if (trade.setups && !rulesLoading) {
         setRulesLoading(true);
         try {
-          console.log("Fetching rules for setup:", trade.setups);
           await fetchRulesForSetup(trade.setups);
           setShowRulesDropdown(true);
         } finally {
@@ -457,11 +457,7 @@ function TradeModal({
 
   // Reset localSelectedRules when dropdown opens or trade.selectedRules changes
   useEffect(() => {
-    console.log("useEffect for localSelectedRules");
-    console.log("showRulesDropdown:", showRulesDropdown);
-    console.log("trade.selectedRules:", trade.selectedRules);
     if (showRulesDropdown) {
-      console.log("Setting localSelectedRules to:", trade.selectedRules || []);
       setLocalSelectedRules(trade.selectedRules || []);
     }
   }, [showRulesDropdown, trade.selectedRules]);
@@ -485,13 +481,11 @@ function TradeModal({
 
   // Fetch rules for the selected setup
   const fetchRulesForSetup = async (setupId) => {
-    console.log("fetchRulesForSetup called with:", setupId);
     if (!user || !setupId) return;
     try {
       // Find the setup object
       const setupObj = authSetups.find((s) => s.id === setupId);
       if (!setupObj) {
-        console.log("No setup found for id:", setupId);
         setRules([]);
         return;
       }
@@ -516,7 +510,6 @@ function TradeModal({
           }))
         );
       }
-      console.log("Fetched rules:", allRules);
       setRules(allRules);
     } catch (err) {
       console.error("Error fetching rules:", err);
@@ -560,7 +553,6 @@ function TradeModal({
               }
             } catch (err) {
               alert("Error uploading pasted image: " + err.message);
-              console.error("Upload error:", err);
             }
             setImageUploading(false);
           }
@@ -579,6 +571,73 @@ function TradeModal({
     onChange,
     trade,
   ]);
+
+  useEffect(() => {
+    setAuthReady(!!user);
+  }, [user]);
+
+  // Fetch trade tags
+  useEffect(() => {
+    if (!authReady || !user) return;
+
+    try {
+      const tagsRef = collection(db, `users/${user.uid}/tradeTags`);
+      const q = query(tagsRef, orderBy("lastUsed", "desc"));
+
+      const unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          const tags = snapshot.docs.map((doc) => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              ...data,
+            };
+          });
+          setAvailableTags(tags);
+        },
+        (error) => {
+          setAvailableTags([]);
+        }
+      );
+
+      return () => unsubscribe();
+    } catch (error) {
+      setAvailableTags([]);
+    }
+  }, [authReady, user]);
+
+  const deleteTag = async (tagId) => {
+    if (!user) return;
+
+    if (
+      !window.confirm(
+        "Are you sure you want to delete this tag? This will remove it from all trades."
+      )
+    ) {
+      return;
+    }
+
+    try {
+      // Delete the tag from the correct path
+      const tagRef = doc(db, "users", user.uid, "tradeTags", tagId);
+      await deleteDoc(tagRef);
+
+      // Update available tags
+      setAvailableTags((prev) => prev.filter((tag) => tag.id !== tagId));
+
+      // Remove the tag from the current trade if it's selected
+      if (trade.tagIds?.includes(tagId)) {
+        handleFieldChange(
+          "tagIds",
+          trade.tagIds.filter((id) => id !== tagId)
+        );
+      }
+    } catch (error) {
+      console.error("Error deleting tag:", error);
+      alert("Error deleting tag: " + error.message);
+    }
+  };
 
   if (!open) return null;
 
@@ -663,21 +722,67 @@ function TradeModal({
     fontSize: 14,
   };
 
-  const handleFieldChange = (e) => {
-    const { name, value } = e.target;
+  const handleFieldChange = (field, value) => {
+    if (!editMode) return;
 
-    // Special handling for maxDrawdownR and maxRR
-    if (name === "maxDrawdownR" || name === "maxRR") {
-      // Only update if the value is a valid number or empty
-      if (value === "" || /^-?\d*\.?\d*$/.test(value)) {
-        const updatedTrade = { ...trade, [name]: value };
-        setTrade(updatedTrade);
-        onChange && onChange(updatedTrade);
+    // If value is an event object, extract the value from it
+    const newValue = value?.target ? value.target.value : value;
+    const name = value?.target ? value.target.name : field;
+
+    // Validate and clean the value based on field type
+    let validatedValue = newValue;
+
+    // Number fields validation
+    const numberFields = [
+      "volume",
+      "entryPrice",
+      "exitPrice",
+      "sl",
+      "commission",
+      "swap",
+      "netPnL",
+      "maxDrawdownR",
+      "maxRR",
+    ];
+    if (numberFields.includes(name)) {
+      // Allow empty string for clearing the field
+      if (newValue === "") {
+        validatedValue = null;
+      } else {
+        // Convert to number and validate
+        const num = Number(newValue);
+        if (isNaN(num)) {
+          return; // Don't update if invalid number
+        }
+        validatedValue = num;
       }
-      return;
     }
 
-    const updatedTrade = { ...trade, [name]: value };
+    // Direction field validation
+    if (name === "direction") {
+      if (!["Buy", "Sell"].includes(newValue)) {
+        return; // Don't update if invalid direction
+      }
+    }
+
+    // Setups field validation
+    if (name === "setups") {
+      // Ensure setups is either a valid ID or null
+      if (newValue && !authSetups.some((s) => s.id === newValue)) {
+        return; // Don't update if invalid setup ID
+      }
+    }
+
+    // Account field validation
+    if (name === "accountId") {
+      // Ensure accountId is either a valid ID or null
+      if (newValue && !authAccounts.some((a) => a.id === newValue)) {
+        return; // Don't update if invalid account ID
+      }
+    }
+
+    // Update the trade with validated value
+    const updatedTrade = { ...trade, [name]: validatedValue };
 
     // Calculate risk amount when entry price, stop loss, or volume changes
     if (name === "entryPrice" || name === "sl" || name === "volume") {
@@ -708,6 +813,8 @@ function TradeModal({
   };
 
   const handleDateChange = (field, date) => {
+    if (!editMode) return;
+
     const updatedTrade = { ...trade, [field]: date };
 
     // Get the account's initial balance
@@ -747,13 +854,6 @@ function TradeModal({
 
       if (user && trade.id && !trade.id.startsWith("preview-")) {
         // Update existing trade
-        console.log("Updating trade:", {
-          tradeId: trade.id,
-          accountId: trade.accountId,
-          userId: user.uid,
-          path: `users/${user.uid}/accounts/${trade.accountId}/trades/${trade.id}`,
-          isDeleted: trade.isDeleted,
-        });
         await updateTrade(trade.accountId, trade.id, trade);
         alert("Trade updated successfully!");
       } else {
@@ -763,13 +863,6 @@ function TradeModal({
           accountId: trade.accountId || authAccounts[0]?.id,
           isDeleted: false,
         };
-
-        console.log("Adding new trade:", {
-          accountId: newTrade.accountId,
-          userId: user.uid,
-          path: `users/${user.uid}/accounts/${newTrade.accountId}/trades`,
-          isDeleted: newTrade.isDeleted,
-        });
 
         await createTrade(newTrade.accountId, newTrade);
         alert("Trade added successfully!");
@@ -801,16 +894,9 @@ function TradeModal({
 
   // Image upload handler
   const handleImageUpload = async (e) => {
-    console.log("Image upload handler triggered");
     const file = e.target.files[0];
-    console.log("Selected file:", file);
-    console.log("Current trade:", trade);
-    console.log("Current user:", user);
-    console.log("trade.accountId:", trade.accountId);
-    console.log("trade.id:", trade.id);
 
     if (!file || !trade || !user || !trade.accountId || !trade.id) {
-      console.log("Missing required info for upload", { file, trade, user });
       return;
     }
     setImageUploading(true);
@@ -818,31 +904,25 @@ function TradeModal({
       const filePath = `users/${user.uid}/accounts/${trade.accountId}/trades/${
         trade.id
       }/chart_${Date.now()}_${file.name}`;
-      console.log("Uploading to Supabase Storage at path:", filePath);
 
       const { data, error } = await supabase.storage
         .from("chart-images")
         .upload(filePath, file, { upsert: true });
-      console.log("Upload result:", { data, error });
       if (error) throw error;
 
       const { data: publicUrlData } = supabase.storage
         .from("chart-images")
         .getPublicUrl(filePath);
       const url = publicUrlData.publicUrl;
-      console.log("Public URL from Supabase:", url);
 
       setTrade((prev) => {
-        console.log("Updating trade state with imageUrl:", url);
         return { ...prev, imageUrl: url };
       });
       if (onChange) {
-        console.log("Calling onChange with new imageUrl");
         onChange({ ...trade, imageUrl: url });
       }
     } catch (err) {
       alert("Error uploading image: " + err.message);
-      console.error("Upload error:", err);
     }
     setImageUploading(false);
   };
@@ -893,10 +973,7 @@ function TradeModal({
                 />
                 <FaCheck
                   style={{ cursor: "pointer", color: "#52c41a", fontSize: 22 }}
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    await handleSave();
-                  }}
+                  onClick={handleSave}
                   title="Save"
                 />
                 <button
@@ -1115,7 +1192,7 @@ function TradeModal({
                     name={key}
                     type="text"
                     value={trade[key] ?? ""}
-                    onChange={handleFieldChange}
+                    onChange={(e) => handleFieldChange(key, e)}
                     style={numberInputStyle}
                     inputMode="decimal"
                     pattern="-?\d*\.?\d*"
@@ -1179,9 +1256,7 @@ function TradeModal({
                         : null
                     }
                     onChange={(option) => {
-                      handleFieldChange({
-                        target: { name: "setups", value: option?.value },
-                      });
+                      handleFieldChange("setups", option?.value || null);
                     }}
                     options={authSetups.map((setup) => ({
                       label: setup.name,
@@ -1284,23 +1359,85 @@ function TradeModal({
               );
             }
 
+            // Max RR field
+            if (key === "maxRR") {
+              return (
+                <div key={key} style={cardStyle}>
+                  <div style={cardLabelStyle}>{col.label}</div>
+                  {editMode ? (
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={trade[key] || ""}
+                      onChange={(e) => handleFieldChange(key, e.target.value)}
+                      style={inputStyle}
+                    />
+                  ) : (
+                    <div style={readOnlyStyle}>{trade[key] || "N/A"}</div>
+                  )}
+                </div>
+              );
+            }
+
+            // Tags field
+            if (key === "tagIds") {
+              return (
+                <div key={key} style={cardStyle}>
+                  <div style={cardLabelStyle}>Tags</div>
+                  {editMode ? (
+                    <TagManager
+                      selectedTags={
+                        Array.isArray(trade.tagIds) ? trade.tagIds : []
+                      }
+                      initialTags={availableTags}
+                      onTagsChange={(tags) => handleFieldChange("tagIds", tags)}
+                      placeholder="Add tags..."
+                      maxTags={5}
+                      allowCreate={true}
+                      collectionName="tradeTags"
+                    />
+                  ) : (
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      {trade.tagIds?.map((tagId) => {
+                        const tag = availableTags.find((t) => t.id === tagId);
+                        return tag ? (
+                          <span
+                            key={tagId}
+                            style={{
+                              background: "#f0f0f0",
+                              color: "#666",
+                              borderRadius: 6,
+                              padding: "2px 8px",
+                              fontSize: 13,
+                              fontWeight: 500,
+                            }}
+                          >
+                            {tag.name}
+                          </span>
+                        ) : null;
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
             // Default: text input in edit mode
             if (editMode) {
               return (
                 <div key={key} style={cardStyle}>
                   <div style={cardLabelStyle}>{col.label}</div>
                   <input
-                    name={key}
                     type="text"
-                    value={trade[key] ?? ""}
-                    onChange={handleFieldChange}
+                    value={trade[key] || ""}
+                    onChange={(e) => handleFieldChange(key, e.target.value)}
                     style={inputStyle}
                   />
                 </div>
               );
             }
 
-            // View mode: read-only
+            // Default: read-only display
             return (
               <div key={key} style={cardStyle}>
                 <div style={cardLabelStyle}>{col.label}</div>
@@ -1317,11 +1454,15 @@ function TradeModal({
                         : "#222",
                   }}
                 >
-                  {key === "setups"
-                    ? getSetupName(trade[key])
-                    : key === "entryTimestamp" || key === "exitTimestamp"
-                    ? formatDateTime24(trade[key])
-                    : trade[key] ?? ""}
+                  {trade[key] !== undefined &&
+                  trade[key] !== null &&
+                  trade[key] !== ""
+                    ? key === "setups"
+                      ? getSetupName(trade[key])
+                      : key === "entryTimestamp" || key === "exitTimestamp"
+                      ? formatDateTime24(trade[key])
+                      : trade[key]
+                    : "N/A"}
                 </div>
               </div>
             );

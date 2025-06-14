@@ -55,6 +55,15 @@ function TradeTable({
     direction: "desc",
   });
 
+  // Add filter states
+  const [filters, setFilters] = useState({
+    winLoss: "all",
+    tradingHour: "all",
+    symbol: "all",
+    direction: "all",
+    setup: "all",
+  });
+
   // Helper for account name
   const getAccountName = (accountId) =>
     accounts.find((a) => a.id === accountId)?.name || "";
@@ -130,6 +139,39 @@ function TradeTable({
       return 0;
     });
   }, [trades, sortConfig, getAccountName]);
+
+  // Filter trades
+  const filteredTrades = React.useMemo(() => {
+    return sortedTrades.filter((trade) => {
+      // Win/Loss filter
+      if (filters.winLoss !== "all") {
+        const isWin = trade.netPnL > 0;
+        if (filters.winLoss === "win" && !isWin) return false;
+        if (filters.winLoss === "loss" && isWin) return false;
+      }
+
+      // Trading hour filter
+      if (filters.tradingHour !== "all") {
+        const entryHour = new Date(trade.entryTimestamp).getHours();
+        const [startHour, endHour] = filters.tradingHour.split("-").map(Number);
+        if (entryHour < startHour || entryHour >= endHour) return false;
+      }
+
+      // Symbol filter
+      if (filters.symbol !== "all" && trade.symbol !== filters.symbol)
+        return false;
+
+      // Direction filter
+      if (filters.direction !== "all" && trade.direction !== filters.direction)
+        return false;
+
+      // Setup filter
+      if (filters.setup !== "all" && trade.setups !== filters.setup)
+        return false;
+
+      return true;
+    });
+  }, [sortedTrades, filters]);
 
   const handleToggleColumn = (key) => {
     setVisibleColumns((prev) =>
@@ -222,6 +264,7 @@ function TradeTable({
       >
         {/* Filter Icon */}
         <div
+          ref={filterButtonRef}
           style={{
             position: "absolute",
             left: 8,
@@ -239,9 +282,218 @@ function TradeTable({
               e.stopPropagation();
               setShowColumnFilter((v) => !v);
             }}
-            title="Filter Columns"
+            title="Filter Trades"
           />
         </div>
+
+        {/* Filter Dropdown */}
+        {showColumnFilter && (
+          <div
+            style={{
+              position: "fixed",
+              top: 80,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 2000,
+              background: "#fff",
+              border: "1px solid #eee",
+              borderRadius: 10,
+              boxShadow: "0 4px 24px rgba(0,0,0,0.10)",
+              padding: 18,
+              minWidth: 400,
+              maxWidth: 600,
+              maxHeight: "80vh",
+              overflow: "hidden",
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 10 }}>
+              Filter Trades
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(2, 1fr)",
+                gap: 16,
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontSize: 12, color: "#666" }}>Result</label>
+                <select
+                  value={filters.winLoss}
+                  onChange={(e) =>
+                    setFilters((prev) => ({ ...prev, winLoss: e.target.value }))
+                  }
+                  style={{
+                    padding: "8px 12px",
+                    border: "1px solid #eee",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    width: "100%",
+                    background: "#fff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="all">All Trades</option>
+                  <option value="win">Winning Trades</option>
+                  <option value="loss">Losing Trades</option>
+                </select>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontSize: 12, color: "#666" }}>
+                  Trading Hour
+                </label>
+                <select
+                  value={filters.tradingHour}
+                  onChange={(e) =>
+                    setFilters((prev) => ({
+                      ...prev,
+                      tradingHour: e.target.value,
+                    }))
+                  }
+                  style={{
+                    padding: "8px 12px",
+                    border: "1px solid #eee",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    width: "100%",
+                    background: "#fff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="all">All Hours</option>
+                  <option value="0-4">00:00 - 04:00</option>
+                  <option value="4-8">04:00 - 08:00</option>
+                  <option value="8-12">08:00 - 12:00</option>
+                  <option value="12-16">12:00 - 16:00</option>
+                  <option value="16-20">16:00 - 20:00</option>
+                  <option value="20-24">20:00 - 24:00</option>
+                </select>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontSize: 12, color: "#666" }}>Symbol</label>
+                <select
+                  value={filters.symbol}
+                  onChange={(e) =>
+                    setFilters((prev) => ({ ...prev, symbol: e.target.value }))
+                  }
+                  style={{
+                    padding: "8px 12px",
+                    border: "1px solid #eee",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    width: "100%",
+                    background: "#fff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="all">All Symbols</option>
+                  {Array.from(new Set(trades.map((t) => t.symbol))).map(
+                    (symbol) => (
+                      <option key={symbol} value={symbol}>
+                        {symbol}
+                      </option>
+                    )
+                  )}
+                </select>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontSize: 12, color: "#666" }}>Direction</label>
+                <select
+                  value={filters.direction}
+                  onChange={(e) =>
+                    setFilters((prev) => ({
+                      ...prev,
+                      direction: e.target.value,
+                    }))
+                  }
+                  style={{
+                    padding: "8px 12px",
+                    border: "1px solid #eee",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    width: "100%",
+                    background: "#fff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="all">All Directions</option>
+                  <option value="Buy">Buy</option>
+                  <option value="Sell">Sell</option>
+                </select>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontSize: 12, color: "#666" }}>Setup</label>
+                <select
+                  value={filters.setup}
+                  onChange={(e) =>
+                    setFilters((prev) => ({ ...prev, setup: e.target.value }))
+                  }
+                  style={{
+                    padding: "8px 12px",
+                    border: "1px solid #eee",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    width: "100%",
+                    background: "#fff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="all">All Setups</option>
+                  {Array.from(new Set(trades.map((t) => t.setups)))
+                    .filter(Boolean)
+                    .map((setup) => (
+                      <option key={setup} value={setup}>
+                        {setup}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            </div>
+
+            <div
+              style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}
+            >
+              <button
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid #eee",
+                  background: "#f4f6fa",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  setFilters({
+                    winLoss: "all",
+                    tradingHour: "all",
+                    symbol: "all",
+                    direction: "all",
+                    setup: "all",
+                  });
+                }}
+              >
+                Reset Filters
+              </button>
+              <button
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid #eee",
+                  background: "#f4f6fa",
+                  cursor: "pointer",
+                }}
+                onClick={() => setShowColumnFilter(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
 
         <table
           style={{
@@ -333,7 +585,7 @@ function TradeTable({
                   Loading trades...
                 </td>
               </tr>
-            ) : sortedTrades.length === 0 ? (
+            ) : filteredTrades.length === 0 ? (
               <tr>
                 <td
                   colSpan={visibleColumns.length + (showCheckboxes ? 1 : 0)}
@@ -343,7 +595,7 @@ function TradeTable({
                 </td>
               </tr>
             ) : (
-              sortedTrades.map((trade, idx) => (
+              filteredTrades.map((trade, idx) => (
                 <tr
                   key={trade.id || idx}
                   style={{

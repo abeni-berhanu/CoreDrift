@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useAccount } from "../contexts/AccountContext";
-import { db } from "../firebase";
+import { db, auth } from "../firebase";
 import { dataService } from "../services/DataService";
 import {
   collection,
@@ -14,6 +14,11 @@ import {
   getDocs,
   where,
   orderBy,
+  serverTimestamp,
+  getDoc,
+  setDoc,
+  writeBatch,
+  increment,
 } from "firebase/firestore";
 import {
   FaSearch,
@@ -29,6 +34,7 @@ import {
 } from "react-icons/fa";
 import { NotesModal } from "../components/Notes";
 import TradeModal from "../components/TradeModal";
+import TagManager from "../components/TagManager";
 
 // Add normalizeTradeDates function
 function normalizeTradeDates(trade) {
@@ -151,9 +157,12 @@ function getTodayFormatted() {
 
 function Notebook() {
   const { user } = useAuth();
+  console.log("[Notebook] Auth user:", user);
+
   const { accounts, selectedAccountIds } = useAccount();
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedAccount, setSelectedAccount] = useState("all");
   const [sortBy, setSortBy] = useState("date");
@@ -304,6 +313,57 @@ function Notebook() {
     fetchTrades();
   }, [user, selectedAccountIds, accounts]);
 
+  // Fetch available tags
+  useEffect(() => {
+    if (!user) return;
+
+    console.log("Fetching tags for user:", user.uid);
+    try {
+      const tagsRef = collection(db, "users", user.uid, "noteTags");
+      const tagsQuery = query(tagsRef, orderBy("lastUsed", "desc"));
+
+      const unsubscribe = onSnapshot(
+        tagsQuery,
+        (snapshot) => {
+          console.log(
+            "Received snapshot of tags:",
+            snapshot.docs.length,
+            "documents"
+          );
+          const tags = snapshot.docs.map((doc) => {
+            const data = doc.data();
+            console.log("Tag document:", { id: doc.id, ...data });
+            return {
+              id: doc.id,
+              name: data.name,
+              createdAt: data.createdAt,
+              lastUsed: data.lastUsed,
+              count: data.count || 0,
+            };
+          });
+          console.log("Setting available tags to:", tags);
+          setAvailableTags(tags);
+        },
+        (error) => {
+          console.error("Error fetching tags:", error);
+          setAvailableTags([]);
+        }
+      );
+
+      return () => unsubscribe();
+    } catch (error) {
+      console.error("Error setting up tags listener:", error);
+      setAvailableTags([]);
+    }
+  }, [user]);
+
+  // Add effect to handle auth ready state
+  useEffect(() => {
+    if (user !== undefined) {
+      setAuthReady(true);
+    }
+  }, [user]);
+
   // Filter notes
   const filteredNotes = notes.filter((note) => {
     const matchesSearch =
@@ -311,7 +371,7 @@ function Notebook() {
       note.content?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesTags =
       selectedTags.length === 0 ||
-      selectedTags.every((tag) => note.tags?.includes(tag));
+      selectedTags.every((tagId) => note.tagIds?.includes(tagId));
     return matchesSearch && matchesTags;
   });
 
@@ -331,8 +391,26 @@ function Notebook() {
     return 0;
   });
 
-  const handleNoteClick = (note) => {
-    setSelectedNote(normalizeTradeDates(note));
+  const handleNoteClick = async (note) => {
+    if (selectedNote?.id !== note.id) {
+      if (isEditing) {
+        try {
+          // Save changes before switching notes
+          await handleSaveNote();
+          // Only proceed with switching notes if save was successful
+          setIsEditing(false);
+          setSelectedNote(normalizeTradeDates(note));
+        } catch (error) {
+          console.error("Error saving note:", error);
+          // If save fails, stay on current note and keep edit mode
+          return;
+        }
+      } else {
+        // If not in edit mode, just switch notes
+        setIsEditing(false);
+        setSelectedNote(normalizeTradeDates(note));
+      }
+    }
   };
 
   const handleAddNote = () => {
@@ -340,7 +418,7 @@ function Notebook() {
     const newNote = {
       title: isJournal ? getTodayFormatted() : "New Note",
       content: "",
-      tags: [],
+      tagIds: [],
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -460,51 +538,268 @@ function Notebook() {
     setEditSubmitting(false);
   };
 
-  const handleSaveNote = async () => {
-    if (!user || !selectedNote) return;
-    const collectionName = activeTab === "note" ? "notes" : "journalNotes";
-    const notesRef = collection(db, `users/${user.uid}/${collectionName}`);
-    const noteData = {
-      title: selectedNote.title,
-      content: selectedNote.content,
-      createdAt: selectedNote.createdAt,
-      updatedAt: new Date(),
-      tags: selectedNote.tags || [],
-    };
-    console.log("[handleSaveNote] collectionName:", collectionName);
-    console.log("[handleSaveNote] noteData:", noteData);
+  // Update saveCustomTag to return the tag ID
+  const saveCustomTag = async (tag) => {
+    if (!user) {
+      console.error("[saveCustomTag] Cannot save tag: No user is logged in");
+      return null;
+    }
+
+    if (!tag || typeof tag !== "string" || tag.trim() === "") {
+      console.error("[saveCustomTag] Invalid tag:", tag);
+      alert("Please enter a valid tag name");
+      return null;
+    }
+
+    // Trim and normalize the tag
+    const normalizedTag = tag.trim();
+    console.log("[saveCustomTag] Starting tag save operation");
+    console.log("[saveCustomTag] User:", user.uid);
+    console.log("[saveCustomTag] Normalized tag:", normalizedTag);
+
     try {
+      // Verify user is still authenticated
+      if (!auth.currentUser) {
+        throw new Error("User is not authenticated");
+      }
+
+      // Check if tag already exists
+      const tagsRef = collection(db, "users", user.uid, "noteTags");
+      console.log(
+        "[saveCustomTag] Collection path:",
+        `users/${user.uid}/noteTags`
+      );
+
+      const q = query(tagsRef, where("name", "==", normalizedTag));
+      console.log("[saveCustomTag] Executing query for existing tag");
+
+      const querySnapshot = await getDocs(q);
+      console.log("[saveCustomTag] Query result:", {
+        empty: querySnapshot.empty,
+        size: querySnapshot.size,
+        docs: querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+      });
+
+      let tagId;
+      if (querySnapshot.empty) {
+        console.log("[saveCustomTag] Creating new tag document");
+        // Create new tag
+        const newTagRef = await addDoc(tagsRef, {
+          name: normalizedTag,
+          createdAt: serverTimestamp(),
+          lastUsed: serverTimestamp(),
+          count: 1,
+        });
+        tagId = newTagRef.id;
+        console.log(
+          "[saveCustomTag] Successfully created new tag with ID:",
+          tagId
+        );
+
+        // Add the new tag to availableTags immediately
+        const newTag = {
+          id: tagId,
+          name: normalizedTag,
+          createdAt: new Date(),
+          lastUsed: new Date(),
+          count: 1,
+        };
+        setAvailableTags((prev) => [...prev, newTag]);
+      } else {
+        tagId = querySnapshot.docs[0].id;
+        console.log("[saveCustomTag] Tag already exists:", tagId);
+        // Update lastUsed for existing tag
+        const docRef = doc(db, "users", user.uid, "noteTags", tagId);
+        console.log(
+          "[saveCustomTag] Document path:",
+          `users/${user.uid}/noteTags/${tagId}`
+        );
+
+        await updateDoc(docRef, {
+          lastUsed: serverTimestamp(),
+          count: increment(1),
+        });
+        console.log("[saveCustomTag] Successfully updated existing tag");
+      }
+
+      // Update the selectedNote's tagIds array with the new tag ID
+      if (selectedNote) {
+        setSelectedNote((prev) => ({
+          ...prev,
+          tagIds: [...(prev.tagIds || []), tagId],
+        }));
+      }
+
+      return tagId;
+    } catch (error) {
+      console.error("[saveCustomTag] Error saving custom tag:", error);
+      console.error("[saveCustomTag] Error details:", {
+        code: error.code,
+        message: error.message,
+        stack: error.stack,
+        user: user?.uid,
+        tag: normalizedTag,
+        path: `users/${user?.uid}/noteTags`,
+        authState: auth.currentUser ? "authenticated" : "not authenticated",
+      });
+
+      let errorMessage = "Failed to save tag. Please try again.";
+      if (error.code === "permission-denied") {
+        errorMessage =
+          "You don't have permission to save tags. Please check your account permissions.";
+      } else if (error.code === "not-found") {
+        errorMessage =
+          "The tag collection could not be found. Please try again.";
+      } else if (error.code === "already-exists") {
+        errorMessage = "A tag with this name already exists. Please try again.";
+      } else if (error.message === "User is not authenticated") {
+        errorMessage = "Your session has expired. Please log in again.";
+      }
+
+      alert(errorMessage);
+      return null;
+    }
+  };
+
+  // Update handleSaveNote to use tag IDs
+  const handleSaveNote = async () => {
+    if (!user || !selectedNote) {
+      console.error(
+        "[handleSaveNote] Cannot save note: No user or selected note"
+      );
+      return;
+    }
+
+    console.log("[handleSaveNote] User:", user.uid);
+    console.log("[handleSaveNote] Selected note:", selectedNote);
+
+    const collectionName = activeTab === "note" ? "notes" : "journalNotes";
+    console.log("[handleSaveNote] Using collection:", collectionName);
+
+    if (!["notes", "journalNotes"].includes(collectionName)) {
+      console.error(
+        "[handleSaveNote] Invalid collection name:",
+        collectionName
+      );
+      alert("Invalid note type. Please try again.");
+      return;
+    }
+
+    const notesRef = collection(db, "users", user.uid, collectionName);
+    console.log(
+      "[handleSaveNote] Collection path:",
+      `users/${user.uid}/${collectionName}`
+    );
+
+    // Convert dates to Firestore Timestamps
+    const noteData = {
+      title: selectedNote.title || "",
+      content: selectedNote.content || "",
+      createdAt: selectedNote.createdAt ? serverTimestamp() : serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      tagIds: selectedNote.tagIds || [], // Store tag IDs instead of names
+    };
+
+    console.log("[handleSaveNote] noteData:", noteData);
+
+    try {
+      // Start a batch write
+      const batch = writeBatch(db);
+
+      // Update lastUsed timestamp for each tag
+      if (noteData.tagIds && noteData.tagIds.length > 0) {
+        console.log(
+          "[handleSaveNote] Updating lastUsed for tags:",
+          noteData.tagIds
+        );
+        const tagsRef = collection(db, "users", user.uid, "noteTags");
+
+        for (const tagId of noteData.tagIds) {
+          // Make sure we're using the tag ID, not the name
+          if (typeof tagId === "string" && tagId.length > 0) {
+            const tagRef = doc(db, "users", user.uid, "noteTags", tagId);
+            batch.update(tagRef, {
+              lastUsed: serverTimestamp(),
+              count: increment(1),
+            });
+          }
+        }
+      }
+
+      // Save the note
       if (selectedNote.id) {
-        // Update existing note
         console.log("[handleSaveNote] Updating note with id:", selectedNote.id);
         const noteRef = doc(
           db,
+          "users",
+          user.uid,
+          collectionName,
+          selectedNote.id
+        );
+        console.log(
+          "[handleSaveNote] Document path:",
           `users/${user.uid}/${collectionName}/${selectedNote.id}`
         );
-        await updateDoc(noteRef, noteData);
+        batch.update(noteRef, noteData);
+      } else {
+        console.log("[handleSaveNote] Creating new note");
+        const newNoteRef = doc(notesRef);
+        batch.set(newNoteRef, {
+          ...noteData,
+          id: newNoteRef.id, // Add the ID to the document data
+        });
+        selectedNote.id = newNoteRef.id;
+      }
+
+      // Commit all changes
+      await batch.commit();
+      console.log("[handleSaveNote] Successfully saved note and updated tags");
+
+      // Update local state
+      if (selectedNote.id) {
         setNotes(
           notes.map((note) =>
             note.id === selectedNote.id ? { ...note, ...noteData } : note
           )
         );
       } else {
-        // Create new note
-        console.log("[handleSaveNote] Creating new note");
-        const docRef = await addDoc(notesRef, noteData);
-        const newNote = { id: docRef.id, ...noteData };
-        setNotes([newNote, ...notes]);
-        setSelectedNote(newNote);
+        setNotes([{ ...selectedNote, ...noteData }, ...notes]);
       }
+
       setIsEditing(false);
     } catch (error) {
-      console.error(
-        "[handleSaveNote] Error saving note:",
-        error,
-        error?.message,
-        error?.code
-      );
-      alert("Failed to save note. Please try again.");
+      console.error("[handleSaveNote] Error saving note:", error);
+      console.error("[handleSaveNote] Error details:", {
+        code: error.code,
+        message: error.message,
+        stack: error.stack,
+        user: user?.uid,
+        collection: collectionName,
+        noteId: selectedNote?.id,
+        path: `users/${user.uid}/${collectionName}/${
+          selectedNote?.id || "new"
+        }`,
+      });
+
+      let errorMessage = "Failed to save note. Please try again.";
+      if (error.code === "permission-denied") {
+        errorMessage =
+          "You don't have permission to save notes. Please check your account permissions.";
+      } else if (error.code === "not-found") {
+        errorMessage =
+          "The note or collection could not be found. Please try again.";
+      } else if (error.code === "already-exists") {
+        errorMessage = "A note with this ID already exists. Please try again.";
+      }
+
+      alert(errorMessage);
     }
+  };
+
+  // Add a helper function to get tag name by ID
+  const getTagName = (tagId) => {
+    const tag = availableTags.find((t) => t.id === tagId);
+    return tag ? tag.name : tagId;
   };
 
   // Clear selected note and exit edit mode when switching tabs
@@ -512,6 +807,60 @@ function Notebook() {
     setSelectedNote(null);
     setIsEditing(false);
   }, [activeTab]);
+
+  // Add deleteTag function
+  const deleteTag = async (tagId) => {
+    if (!user) {
+      console.error("[deleteTag] Cannot delete tag: No user is logged in");
+      return;
+    }
+
+    if (!tagId) {
+      console.error("[deleteTag] Invalid tag ID");
+      return;
+    }
+
+    if (
+      !window.confirm(
+        "Are you sure you want to delete this tag? This will remove it from all notes."
+      )
+    ) {
+      return;
+    }
+
+    try {
+      // Delete the tag document
+      const tagRef = doc(db, "users", user.uid, "noteTags", tagId);
+      await deleteDoc(tagRef);
+
+      // Remove the tag from availableTags
+      setAvailableTags((prev) => prev.filter((tag) => tag.id !== tagId));
+
+      // Remove the tag from any notes that have it
+      const batch = writeBatch(db);
+      const notesCollection = activeTab === "note" ? "notes" : "journalNotes";
+      const notesRef = collection(db, "users", user.uid, notesCollection);
+      const notesSnapshot = await getDocs(notesRef);
+
+      notesSnapshot.docs.forEach((doc) => {
+        const note = doc.data();
+        if (note.tagIds && note.tagIds.includes(tagId)) {
+          const noteRef = doc.ref;
+          batch.update(noteRef, {
+            tagIds: note.tagIds.filter((id) => id !== tagId),
+          });
+        }
+      });
+
+      await batch.commit();
+      console.log(
+        "[deleteTag] Successfully deleted tag and removed it from all notes"
+      );
+    } catch (error) {
+      console.error("[deleteTag] Error deleting tag:", error);
+      alert("Failed to delete tag. Please try again.");
+    }
+  };
 
   return (
     <div
@@ -651,9 +1000,9 @@ function Notebook() {
               }}
               onClick={() => setShowTagDropdown(true)}
             >
-              {selectedTags.map((tag) => (
+              {selectedTags.map((tagId) => (
                 <span
-                  key={tag}
+                  key={tagId}
                   style={{
                     background: "#f0f0f0",
                     color: "#888",
@@ -666,7 +1015,7 @@ function Notebook() {
                     gap: 4,
                   }}
                 >
-                  {tag}
+                  {getTagName(tagId)}
                   <button
                     style={{
                       background: "none",
@@ -678,7 +1027,7 @@ function Notebook() {
                     }}
                     onClick={(e) => {
                       e.stopPropagation();
-                      setSelectedTags(selectedTags.filter((t) => t !== tag));
+                      setSelectedTags(selectedTags.filter((t) => t !== tagId));
                     }}
                   >
                     ×
@@ -722,12 +1071,16 @@ function Notebook() {
                 {availableTags
                   .filter(
                     (tag) =>
-                      tag.toLowerCase().includes(tagSearch.toLowerCase()) &&
-                      !selectedTags.includes(tag)
+                      tag &&
+                      tag.name &&
+                      tag.name
+                        .toLowerCase()
+                        .includes(tagSearch.toLowerCase()) &&
+                      !selectedTags.includes(tag.id)
                   )
                   .map((tag) => (
                     <div
-                      key={tag}
+                      key={tag.id}
                       style={{
                         padding: "8px 12px",
                         cursor: "pointer",
@@ -735,18 +1088,18 @@ function Notebook() {
                         color: "#555",
                       }}
                       onClick={() => {
-                        setSelectedTags([...selectedTags, tag]);
+                        setSelectedTags([...selectedTags, tag.id]);
                         setTagSearch("");
                         setShowTagDropdown(false);
                       }}
                     >
-                      {tag}
+                      {tag.name}
                     </div>
                   ))}
                 {availableTags.filter(
                   (tag) =>
-                    tag.toLowerCase().includes(tagSearch.toLowerCase()) &&
-                    !selectedTags.includes(tag)
+                    tag.name.toLowerCase().includes(tagSearch.toLowerCase()) &&
+                    !selectedTags.includes(tag.id)
                 ).length === 0 && (
                   <div
                     style={{ padding: "8px 12px", color: "#aaa", fontSize: 13 }}
@@ -921,7 +1274,7 @@ function Notebook() {
                     >
                       {note.title}
                     </span>
-                    {note.tags && note.tags.length > 0 && (
+                    {note.tagIds && note.tagIds.length > 0 && (
                       <div
                         style={{
                           display: "flex",
@@ -930,9 +1283,9 @@ function Notebook() {
                           marginLeft: 8,
                         }}
                       >
-                        {note.tags.map((tag) => (
+                        {note.tagIds.map((tagId) => (
                           <span
-                            key={tag}
+                            key={tagId}
                             style={{
                               background: "#f0f0f0",
                               color: "#888",
@@ -942,7 +1295,7 @@ function Notebook() {
                               fontWeight: 500,
                             }}
                           >
-                            {tag}
+                            {getTagName(tagId)}
                           </span>
                         ))}
                       </div>
@@ -996,16 +1349,32 @@ function Notebook() {
             }}
           >
             {/* Add tags */}
-            <input
-              placeholder="Add tags..."
-              style={{
-                padding: "7px 10px",
-                borderRadius: 8,
-                border: "1px solid #eee",
-                fontSize: 13,
-                minWidth: 120,
-              }}
-            />
+            <div style={{ flex: 1 }}>
+              {authReady && user && (
+                <TagManager
+                  selectedTags={
+                    Array.isArray(selectedNote?.tagIds)
+                      ? selectedNote.tagIds
+                      : []
+                  }
+                  initialTags={availableTags}
+                  onTagsChange={(newTagIds) => {
+                    setSelectedNote((prev) => ({
+                      ...prev,
+                      tagIds: newTagIds,
+                    }));
+                  }}
+                  placeholder="Add tags..."
+                  maxTags={10}
+                  allowCreate={true}
+                  style={{
+                    pointerEvents: isEditing ? "auto" : "none",
+                    cursor: isEditing ? "text" : "default",
+                  }}
+                  collectionName="noteTags"
+                />
+              )}
+            </div>
             {/* Action buttons */}
             {activeTab === "analysis" && (
               <button
@@ -1038,9 +1407,11 @@ function Notebook() {
                 display: "flex",
                 alignItems: "center",
                 gap: 5,
-                cursor: "pointer",
+                cursor: selectedNote ? "pointer" : "not-allowed",
+                opacity: selectedNote ? 1 : 0.5,
               }}
-              onClick={() => setIsEditing(!isEditing)}
+              onClick={() => selectedNote && setIsEditing(!isEditing)}
+              disabled={!selectedNote}
             >
               {isEditing ? "Cancel Edit" : "Edit Note"}
             </button>
@@ -1076,9 +1447,11 @@ function Notebook() {
                 display: "flex",
                 alignItems: "center",
                 gap: 5,
-                cursor: "pointer",
+                cursor: selectedNote ? "pointer" : "not-allowed",
+                opacity: selectedNote ? 1 : 0.5,
               }}
-              onClick={handleDeleteNote}
+              onClick={() => selectedNote && handleDeleteNote()}
+              disabled={!selectedNote}
             >
               Delete Note
             </button>
@@ -1198,45 +1571,22 @@ function Notebook() {
                           style={{
                             fontSize: 13,
                             border: "1px solid #6C63FF",
-                            borderRadius: 6,
+                            borderRadius: 4,
                             padding: "4px 8px",
-                            background: "#fff",
                           }}
                         />
-                      ) : selectedNote.createdAt ? (
-                        new Date(
-                          selectedNote.createdAt?.toDate?.() ||
-                            selectedNote.createdAt
-                        ).toLocaleString()
                       ) : (
-                        ""
+                        <>
+                          <FaCalendarAlt />
+                          {selectedNote.createdAt
+                            ? new Date(
+                                selectedNote.createdAt?.toDate?.() ||
+                                  selectedNote.createdAt
+                              ).toLocaleString()
+                            : ""}
+                        </>
                       )}
                     </div>
-                    {selectedNote.tags && selectedNote.tags.length > 0 && (
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: "6px",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        {selectedNote.tags.map((tag) => (
-                          <span
-                            key={tag}
-                            style={{
-                              background: "#f0f0f0",
-                              color: "#888",
-                              borderRadius: 6,
-                              padding: "3px 10px",
-                              fontSize: 13,
-                              fontWeight: 500,
-                            }}
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 </div>
                 <div
