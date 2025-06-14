@@ -23,6 +23,7 @@ const thStyle = {
   borderRight: "none",
   borderLeft: "none",
 };
+
 const tdStyle = {
   padding: "10px 8px",
   color: "#333",
@@ -32,6 +33,18 @@ const tdStyle = {
   borderRight: "none",
   borderLeft: "none",
 };
+
+const trStyle = (trade) => ({
+  borderBottom: "1px solid #f0f0f0",
+  transition: "all 0.2s ease",
+  cursor: "pointer",
+  backgroundColor:
+    trade.status === "WIN"
+      ? "rgba(82, 196, 26, 0.05)"
+      : trade.status === "LOSS"
+      ? "rgba(245, 34, 45, 0.05)"
+      : "transparent",
+});
 
 function TradeTable({
   trades = [],
@@ -500,19 +513,17 @@ function TradeTable({
             width: "100%",
             borderCollapse: "collapse",
             fontSize: 14,
+            background: "#fff",
           }}
         >
           <thead>
-            <tr style={{ background: "#f4f6fa" }}>
+            <tr>
               {showCheckboxes && (
                 <th style={thStyle}>
                   <input
                     type="checkbox"
-                    checked={
-                      selectedRows.length === trades.length && trades.length > 0
-                    }
+                    checked={selectedRows.length === trades.length}
                     onChange={handleSelectAll}
-                    style={{ cursor: "pointer" }}
                   />
                 </th>
               )}
@@ -521,55 +532,19 @@ function TradeTable({
                 .map((col) => (
                   <th
                     key={col.key}
-                    style={{
-                      ...thStyle,
-                      cursor: "pointer",
-                      userSelect: "none",
-                      position: "relative",
-                    }}
+                    style={thStyle}
                     onClick={() => handleSort(col.key)}
                   >
                     <div
-                      style={{ display: "flex", alignItems: "center", gap: 4 }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        cursor: "pointer",
+                      }}
                     >
                       {col.label}
                       {getSortIcon(col.key)}
-                      {col.key === "entryTimestamp" && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleResetSort(e);
-                          }}
-                          style={{
-                            position: "absolute",
-                            right: 8,
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                            background: "none",
-                            border: "none",
-                            padding: 4,
-                            cursor: "pointer",
-                            color: "#888",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            borderRadius: 4,
-                            transition: "all 0.2s",
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.background =
-                              "rgba(0,0,0,0.05)";
-                            e.currentTarget.style.color = "#666";
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.background = "none";
-                            e.currentTarget.style.color = "#888";
-                          }}
-                          title="Reset to default sort"
-                        >
-                          <FaUndo style={{ fontSize: 12 }} />
-                        </button>
-                      )}
                     </div>
                   </th>
                 ))}
@@ -595,35 +570,26 @@ function TradeTable({
                 </td>
               </tr>
             ) : (
-              filteredTrades.map((trade, idx) => (
+              filteredTrades.map((trade) => (
                 <tr
-                  key={trade.id || idx}
-                  style={{
-                    borderBottom: "1px solid #f0f0f0",
-                    cursor: onRowClick ? "pointer" : undefined,
-                    background: selectedRows.includes(trade.id)
-                      ? "#e6f7ff"
-                      : idx % 2 === 0
-                      ? "#fff"
-                      : "#f9faff",
-                    transition: "all 0.2s ease",
-                  }}
-                  onClick={onRowClick ? () => onRowClick(trade) : undefined}
+                  key={trade.id}
+                  onClick={() => onRowClick?.(trade)}
+                  style={trStyle(trade)}
                   onMouseEnter={(e) => {
-                    if (!selectedRows.includes(trade.id)) {
-                      e.currentTarget.style.background = "#f0f4ff";
-                      e.currentTarget.style.transform = "translateY(-1px)";
-                      e.currentTarget.style.boxShadow =
-                        "0 2px 4px rgba(0,0,0,0.05)";
-                    }
+                    e.currentTarget.style.backgroundColor =
+                      trade.status === "WIN"
+                        ? "rgba(82, 196, 26, 0.1)"
+                        : trade.status === "LOSS"
+                        ? "rgba(245, 34, 45, 0.1)"
+                        : "#f5f5f5";
                   }}
                   onMouseLeave={(e) => {
-                    if (!selectedRows.includes(trade.id)) {
-                      e.currentTarget.style.background =
-                        idx % 2 === 0 ? "#fff" : "#f9faff";
-                      e.currentTarget.style.transform = "translateY(0)";
-                      e.currentTarget.style.boxShadow = "none";
-                    }
+                    e.currentTarget.style.backgroundColor =
+                      trade.status === "WIN"
+                        ? "rgba(82, 196, 26, 0.05)"
+                        : trade.status === "LOSS"
+                        ? "rgba(245, 34, 45, 0.05)"
+                        : "transparent";
                   }}
                 >
                   {showCheckboxes && (
@@ -631,8 +597,10 @@ function TradeTable({
                       <input
                         type="checkbox"
                         checked={selectedRows.includes(trade.id)}
-                        onChange={() => onSelectRow && onSelectRow(trade.id)}
-                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          onSelectRow?.(trade.id);
+                        }}
                       />
                     </td>
                   )}
@@ -641,17 +609,13 @@ function TradeTable({
                     .map((col) => (
                       <td key={col.key} style={tdStyle}>
                         {col.render
-                          ? col.render(trade, {
-                              accounts,
-                              formatDateTime24,
-                              getAccountName,
-                            })
+                          ? col.render(trade)
                           : col.key === "accountName"
                           ? getAccountName(trade.accountId)
                           : col.key === "entryTimestamp" ||
                             col.key === "exitTimestamp"
                           ? formatDateTime24(trade[col.key])
-                          : trade[col.key] ?? ""}
+                          : trade[col.key]}
                       </td>
                     ))}
                 </tr>

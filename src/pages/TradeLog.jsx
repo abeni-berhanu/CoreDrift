@@ -1702,6 +1702,27 @@ function TradeLog() {
     return recalculateTradeFields(updated, initialBalance);
   };
 
+  const styles = {
+    // ... existing styles ...
+    winRow: {
+      backgroundColor: "#52c41a08",
+      "&:hover": {
+        backgroundColor: "#52c41a15",
+      },
+    },
+    lossRow: {
+      backgroundColor: "#f5222d08",
+      "&:hover": {
+        backgroundColor: "#f5222d15",
+      },
+    },
+    normalRow: {
+      "&:hover": {
+        backgroundColor: "#f5f5f5",
+      },
+    },
+  };
+
   return (
     <div style={{ maxWidth: 1400, margin: "0 auto", padding: "0 24px" }}>
       <div
@@ -1925,37 +1946,19 @@ function TradeLog() {
             <tbody>
               {tradesToUpload.map((trade, idx) => (
                 <tr
-                  key={idx}
+                  key={trade.id}
                   style={{
-                    borderBottom: "1px solid #f0f0f0",
+                    ...trStyle,
+                    ...(trade.status === "WIN"
+                      ? styles.winRow
+                      : trade.status === "LOSS"
+                      ? styles.lossRow
+                      : styles.normalRow),
                     cursor: "pointer",
-                    background: selectedTrades.includes(idx)
-                      ? "#e6f7ff"
-                      : idx % 2 === 0
-                      ? "#f9faff"
-                      : "#fff",
+                    borderBottom: "1px solid #f0f0f0",
+                    transition: "all 0.2s ease",
                   }}
-                  onClick={() => {
-                    const trade = tradesToUpload[idx];
-                    setDetailTrade({
-                      ...trade,
-                      id: `preview-${idx}`,
-                      accountId: selectedAccountsForUpload[0],
-                      accountName: accounts.find(
-                        (acc) => acc.id === selectedAccountsForUpload[0]
-                      )?.name,
-                      entryTimestamp:
-                        trade.entryTimestamp instanceof Date
-                          ? trade.entryTimestamp
-                          : new Date(trade.entryTimestamp),
-                      exitTimestamp:
-                        trade.exitTimestamp instanceof Date
-                          ? trade.exitTimestamp
-                          : new Date(trade.exitTimestamp),
-                    });
-                    setIsPreviewMode(true);
-                    setShowTradeDetail(true);
-                  }}
+                  onClick={() => handleTradeClick(trade)}
                 >
                   <td style={tdStyle}>
                     <input
@@ -2415,6 +2418,10 @@ const thStyle = {
   fontSize: 14,
   borderBottom: "2px solid #f0f0f0",
   whiteSpace: "nowrap",
+  position: "relative",
+  background: "#fff",
+  borderRight: "none",
+  borderLeft: "none",
 };
 
 const tdStyle = {
@@ -2422,6 +2429,14 @@ const tdStyle = {
   color: "#333",
   fontSize: 15,
   whiteSpace: "nowrap",
+  background: "inherit",
+  borderRight: "none",
+  borderLeft: "none",
+};
+
+const trStyle = {
+  borderBottom: "1px solid #f0f0f0",
+  transition: "all 0.2s ease",
 };
 
 const inputStyle = {
