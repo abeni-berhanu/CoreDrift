@@ -38,6 +38,7 @@ import {
 } from "../components/Notes";
 import ColorPicker from "../components/ColorPicker";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
+import ConfirmDialog from "../components/ConfirmDialog";
 
 const thStyle = {
   padding: "10px 8px",
@@ -884,99 +885,57 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
 
   // Fetch rule groups and rules when Rules tab is active (real-time for both)
   useEffect(() => {
-    if (tab !== "rules" || !user || !setup?.id) return;
-    setLoadingGroups(true);
-
-    const groupsRef = collection(
-      db,
-      `users/${user.uid}/setups/${setup.id}/ruleGroups`
-    );
-    const q = query(groupsRef, orderBy("order", "asc"));
-    let unsubRulesArr = [];
-    const unsubGroups = onSnapshot(q, async (groupsSnap) => {
-      const groups = groupsSnap.docs.map((groupDoc) => ({
-        id: groupDoc.id,
-        ...groupDoc.data(),
-        rules: [],
-      }));
-
-      // Initialize order for groups that don't have it
-      const batch = writeBatch(db);
-      let needsUpdate = false;
-      groups.forEach((group, index) => {
-        if (group.order === undefined) {
-          const groupRef = doc(
+    if (setup && user) {
+      setLoadingGroups(true);
+      const fetchGroups = async () => {
+        try {
+          const groupsRef = collection(
             db,
-            `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}`
+            `users/${user.uid}/setups/${setup.id}/ruleGroups`
           );
-          batch.update(groupRef, { order: index });
-          needsUpdate = true;
-        }
-      });
-      if (needsUpdate) {
-        await batch.commit();
-      }
+          const groupsSnap = await getDocs(groupsRef);
 
-      // Remove previous rules listeners
-      unsubRulesArr.forEach((unsub) => unsub());
-      unsubRulesArr = [];
-
-      // For each group, set up a real-time listener for its rules
-      groups.forEach((group) => {
-        const rulesRef = collection(
-          db,
-          `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}/rules`
-        );
-        const rulesQuery = query(rulesRef, orderBy("order", "asc"));
-        const unsubRules = onSnapshot(rulesQuery, async (rulesSnap) => {
-          const rules = rulesSnap.docs.map((ruleDoc) => ({
-            id: ruleDoc.id,
-            ...ruleDoc.data(),
+          const groups = groupsSnap.docs.map((groupDoc) => ({
+            id: groupDoc.id,
+            ...groupDoc.data(),
+            rules: [],
           }));
 
-          // Initialize order for rules that don't have it
-          const rulesBatch = writeBatch(db);
-          let rulesNeedUpdate = false;
-          rules.forEach((rule, index) => {
-            if (rule.order === undefined) {
-              const ruleRef = doc(
+          const groupsWithRules = await Promise.all(
+            groups.map(async (group) => {
+              const rulesRef = collection(
                 db,
-                `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}/rules/${rule.id}`
+                `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}/rules`
               );
-              rulesBatch.update(ruleRef, { order: index });
-              rulesNeedUpdate = true;
-            }
-          });
-          if (rulesNeedUpdate) {
-            await rulesBatch.commit();
-          }
+              const rulesSnap = await getDocs(rulesRef);
 
-          setRuleGroups((prevGroups) => {
-            // Find the group by id (not by idx, in case of reordering)
-            const newGroups = prevGroups.map((g) =>
-              g.id === group.id
-                ? {
-                    ...g,
-                    rules: rules,
-                  }
-                : g
-            );
-            return newGroups;
-          });
-        });
-        unsubRulesArr.push(unsubRules);
-      });
+              return {
+                ...group,
+                rules: rulesSnap.docs
+                  .map((ruleDoc) => ({
+                    id: ruleDoc.id,
+                    ...ruleDoc.data(),
+                  }))
+                  .sort((a, b) => (a.order || 0) - (b.order || 0)),
+              };
+            })
+          );
 
-      setRuleGroups(groups);
-      setLoadingGroups(false);
-    });
+          // Sort groups by order
+          const sortedGroups = groupsWithRules.sort(
+            (a, b) => (a.order || 0) - (b.order || 0)
+          );
+          setRuleGroups(sortedGroups);
+        } catch (error) {
+          // Handle error silently
+        } finally {
+          setLoadingGroups(false);
+        }
+      };
 
-    // Cleanup function for both groups and rules listeners
-    return () => {
-      unsubGroups();
-      unsubRulesArr.forEach((unsub) => unsub());
-    };
-  }, [tab, user, setup]);
+      fetchGroups();
+    }
+  }, [setup, user]);
 
   // Create Group handler
   const handleCreateGroup = async (e) => {
@@ -1015,23 +974,6 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
     setRuleError("");
     try {
       const path = `users/${user.uid}/setups/${setup.id}/ruleGroups/${groupId}/rules`;
-      console.log("Creating rule at path:", path);
-      console.log("Rule data:", {
-        name: newRule.name.trim(),
-        followRate: newRule.followRate ? Number(newRule.followRate) : null,
-        netPL: newRule.netPL ? Number(newRule.netPL) : null,
-        profitFactor: newRule.profitFactor || null,
-        winRate: newRule.winRate ? Number(newRule.winRate) : null,
-        createdAt: serverTimestamp(),
-      });
-      console.log(
-        "user.uid:",
-        user?.uid,
-        "setup.id:",
-        setup?.id,
-        "groupId:",
-        groupId
-      );
       const rulesRef = collection(db, path);
       await addDoc(rulesRef, {
         name: newRule.name.trim(),
@@ -1051,7 +993,6 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
       });
     } catch (err) {
       setRuleError("Failed to create rule. Try again.");
-      console.error("Error creating rule:", err);
     }
     setCreatingRule(false);
   };
@@ -1073,27 +1014,91 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
         `users/${user.uid}/setups/${setup.id}/ruleGroups/${groupId}`
       );
       await updateDoc(groupRef, { name: editingGroupName.trim() });
+
+      // Update local state
+      setRuleGroups((prevGroups) =>
+        prevGroups.map((group) =>
+          group.id === groupId
+            ? { ...group, name: editingGroupName.trim() }
+            : group
+        )
+      );
+
       setEditingGroupId(null);
       setEditingGroupName("");
-    } catch (err) {
-      // Optionally show error
-    }
+    } catch (err) {}
   };
 
   // Delete group handler
   const handleDeleteGroup = async (groupId) => {
     setDeletingGroup(true);
     try {
-      const groupRef = doc(
-        db,
-        `users/${user.uid}/setups/${setup.id}/ruleGroups/${groupId}`
+      const rulesPath = `users/${user.uid}/setups/${setup.id}/ruleGroups/${groupId}/rules`;
+      const rulesRef = collection(db, rulesPath);
+      const rulesSnap = await getDocs(rulesRef);
+
+      const batch = writeBatch(db);
+
+      rulesSnap.docs.forEach((ruleDoc) => {
+        const ruleRef = doc(db, `${rulesPath}/${ruleDoc.id}`);
+        batch.delete(ruleRef);
+      });
+
+      const groupPath = `users/${user.uid}/setups/${setup.id}/ruleGroups/${groupId}`;
+      const groupRef = doc(db, groupPath);
+      batch.delete(groupRef);
+
+      await batch.commit();
+      setRuleGroups((prevGroups) =>
+        prevGroups.filter((group) => group.id !== groupId)
       );
-      await deleteDoc(groupRef);
       setConfirmDeleteGroupId(null);
     } catch (err) {
-      // Optionally show error
+      // Handle error silently
+    } finally {
+      setDeletingGroup(false);
     }
-    setDeletingGroup(false);
+  };
+
+  // Fetch groups and rules
+  const fetchGroups = async () => {
+    try {
+      const groupsRef = collection(
+        db,
+        `users/${user.uid}/setups/${setup.id}/ruleGroups`
+      );
+      const groupsSnap = await getDocs(groupsRef);
+
+      const groups = groupsSnap.docs.map((groupDoc) => ({
+        id: groupDoc.id,
+        ...groupDoc.data(),
+        rules: [],
+      }));
+
+      const groupsWithRules = await Promise.all(
+        groups.map(async (group) => {
+          const rulesRef = collection(
+            db,
+            `users/${user.uid}/setups/${setup.id}/ruleGroups/${group.id}/rules`
+          );
+          const rulesSnap = await getDocs(rulesRef);
+
+          return {
+            ...group,
+            rules: rulesSnap.docs.map((ruleDoc) => ({
+              id: ruleDoc.id,
+              ...ruleDoc.data(),
+            })),
+          };
+        })
+      );
+
+      setRuleGroups(groupsWithRules);
+    } catch (error) {
+      // Handle error silently
+    } finally {
+      setLoadingGroups(false);
+    }
   };
 
   // Rule menu handlers
@@ -1113,6 +1118,24 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
         `users/${user.uid}/setups/${setup.id}/ruleGroups/${groupId}/rules/${ruleId}`
       );
       await updateDoc(ruleRef, { name: editingRuleName.trim() });
+
+      // Update local state
+      setRuleGroups((prevGroups) =>
+        prevGroups.map((group) => {
+          if (group.id === groupId) {
+            return {
+              ...group,
+              rules: group.rules.map((rule) =>
+                rule.id === ruleId
+                  ? { ...rule, name: editingRuleName.trim() }
+                  : rule
+              ),
+            };
+          }
+          return group;
+        })
+      );
+
       setEditingRuleId(null);
       setEditingRuleName("");
     } catch (err) {}
@@ -1125,9 +1148,26 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
         `users/${user.uid}/setups/${setup.id}/ruleGroups/${groupId}/rules/${ruleId}`
       );
       await deleteDoc(ruleRef);
+
+      // Update local state
+      setRuleGroups((prevGroups) =>
+        prevGroups.map((group) => {
+          if (group.id === groupId) {
+            return {
+              ...group,
+              rules: group.rules.filter((rule) => rule.id !== ruleId),
+            };
+          }
+          return group;
+        })
+      );
+
       setConfirmDeleteRule(null);
-    } catch (err) {}
-    setDeletingRule(false);
+    } catch (err) {
+      console.error("Error deleting rule:", err);
+    } finally {
+      setDeletingRule(false);
+    }
   };
 
   // Update useEffect to use fetchSetupNotes
@@ -1224,7 +1264,7 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
       // Update local state
       setRuleGroups(newGroups);
 
-      // Update Firestore
+      // Update Firestore with new order
       const batch = writeBatch(db);
       newGroups.forEach((group, index) => {
         const groupRef = doc(
@@ -1256,14 +1296,14 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
         );
         setRuleGroups(newGroups);
 
-        // Update Firestore
+        // Update Firestore with new rule order
         const batch = writeBatch(db);
         newSourceRules.forEach((rule, index) => {
-          const sourceRuleRef = doc(
+          const ruleRef = doc(
             db,
             `users/${user.uid}/setups/${setup.id}/ruleGroups/${source.droppableId}/rules/${rule.id}`
           );
-          batch.update(sourceRuleRef, { order: index });
+          batch.update(ruleRef, { order: index });
         });
         batch.commit().catch((err) => {
           console.error("Error updating rule order:", err);
@@ -1284,21 +1324,21 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
         });
         setRuleGroups(newGroups);
 
-        // Update Firestore
+        // Update Firestore with new rule orders in both groups
         const batch = writeBatch(db);
         newSourceRules.forEach((rule, index) => {
-          const sourceRuleRef = doc(
+          const ruleRef = doc(
             db,
             `users/${user.uid}/setups/${setup.id}/ruleGroups/${source.droppableId}/rules/${rule.id}`
           );
-          batch.update(sourceRuleRef, { order: index });
+          batch.update(ruleRef, { order: index });
         });
         newDestRules.forEach((rule, index) => {
-          const destRuleRef = doc(
+          const ruleRef = doc(
             db,
             `users/${user.uid}/setups/${setup.id}/ruleGroups/${destination.droppableId}/rules/${rule.id}`
           );
-          batch.update(destRuleRef, { order: index });
+          batch.update(ruleRef, { order: index });
         });
         batch.commit().catch((err) => {
           console.error("Error updating rule order:", err);
@@ -1731,42 +1771,30 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
               + Create Group
             </button>
           </div>
-          {/* Common Table Header */}
-          <div
-            style={{
-              display: "flex",
-              background: "#f4f6fa",
-              borderRadius: 8,
-              fontWeight: 600,
-              color: "#888",
-              fontSize: 13,
-              padding: "10px 0 10px 0",
-              marginBottom: 8,
-            }}
-          >
-            <div style={{ width: 32 }}></div>
-            <div style={{ flex: 2, paddingLeft: 16 }}>Rule Name</div>
-            <div style={{ flex: 1, textAlign: "right", paddingRight: 16 }}>
-              Follow Rate
-            </div>
-            <div style={{ flex: 1, textAlign: "right", paddingRight: 16 }}>
-              Net Profit / Loss
-            </div>
-            <div style={{ flex: 1, textAlign: "right", paddingRight: 16 }}>
-              Profit Factor
-            </div>
-            <div style={{ flex: 1, textAlign: "right", paddingRight: 16 }}>
-              Win Rate
-            </div>
-            <div style={{ width: 40 }}></div>
-          </div>
           {loadingGroups ? (
-            <div style={{ color: "#888", textAlign: "center", padding: 32 }}>
-              Loading groups...
+            <div
+              style={{ textAlign: "center", padding: "40px 0", color: "#666" }}
+            >
+              Loading rules...
             </div>
           ) : ruleGroups.length === 0 ? (
-            <div style={{ color: "#888", textAlign: "center", padding: 32 }}>
-              No rule groups yet. Click "Create Group" to get started!
+            <div
+              style={{
+                textAlign: "center",
+                padding: "40px 0",
+                color: "#666",
+                background: "#f8f9fa",
+                borderRadius: 8,
+                marginTop: 16,
+              }}
+            >
+              <div style={{ marginBottom: 16, fontSize: 16 }}>
+                No rule groups found for this setup
+              </div>
+              <div style={{ fontSize: 14, color: "#888" }}>
+                Click the "Create Group" button above to add your first rule
+                group
+              </div>
             </div>
           ) : (
             <DragDropContext onDragEnd={handleDragEnd}>
@@ -2204,12 +2232,12 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
                                                       Rename
                                                     </button>
                                                     <button
-                                                      onClick={() =>
+                                                      onClick={() => {
                                                         setConfirmDeleteRule({
                                                           groupId: group.id,
                                                           ruleId: rule.id,
-                                                        })
-                                                      }
+                                                        });
+                                                      }}
                                                       style={{
                                                         display: "block",
                                                         padding: "8px 16px",
@@ -2523,6 +2551,34 @@ function SetupDetailModal({ setup, onClose, colors, getColorValue }) {
           </div>
         </div>
       )}
+
+      {/* Add confirmation dialog */}
+      <ConfirmDialog
+        isOpen={!!confirmDeleteGroupId}
+        onClose={() => setConfirmDeleteGroupId(null)}
+        onConfirm={() => handleDeleteGroup(confirmDeleteGroupId)}
+        title="Delete Group"
+        message="Are you sure you want to delete this group? This will also delete all rules within it."
+      />
+
+      {/* Rule deletion confirmation dialog */}
+      <ConfirmDialog
+        isOpen={!!confirmDeleteRule}
+        title="Delete Rule"
+        message="Are you sure you want to delete this rule? This action cannot be undone."
+        onClose={() => setConfirmDeleteRule(null)}
+        onConfirm={() => {
+          if (confirmDeleteRule) {
+            handleDeleteRule(
+              confirmDeleteRule.groupId,
+              confirmDeleteRule.ruleId
+            );
+          }
+        }}
+        confirmText="Delete"
+        cancelText="Cancel"
+        confirmColor="#cf1322"
+      />
     </div>
   );
 }

@@ -887,8 +887,12 @@ function Topbar({ collapsed, trades = [], onFilterChange }) {
                       gap: 8,
                       padding: "8px 16px",
                       cursor: "pointer",
-                      fontWeight: 500,
+                      fontWeight: selectedAccountIds.length === 0 ? 700 : 500,
                       color: "#333",
+                      background:
+                        selectedAccountIds.length === 0
+                          ? "#f0f4ff"
+                          : "transparent",
                     }}
                   >
                     <input
@@ -899,6 +903,61 @@ function Topbar({ collapsed, trades = [], onFilterChange }) {
                     />
                     All Accounts
                   </label>
+
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "8px 16px",
+                      cursor: "pointer",
+                      fontWeight:
+                        selectedAccountIds.length > 0 &&
+                        selectedAccountIds.length ===
+                          accounts.filter((acc) => acc.status === "Active")
+                            .length &&
+                        accounts
+                          .filter((acc) => acc.status === "Active")
+                          .every((acc) => selectedAccountIds.includes(acc.id))
+                          ? 700
+                          : 500,
+                      color: "#333",
+                      background:
+                        selectedAccountIds.length > 0 &&
+                        selectedAccountIds.length ===
+                          accounts.filter((acc) => acc.status === "Active")
+                            .length &&
+                        accounts
+                          .filter((acc) => acc.status === "Active")
+                          .every((acc) => selectedAccountIds.includes(acc.id))
+                          ? "#f0f4ff"
+                          : "transparent",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={
+                        selectedAccountIds.length > 0 &&
+                        selectedAccountIds.length ===
+                          accounts.filter((acc) => acc.status === "Active")
+                            .length &&
+                        accounts
+                          .filter((acc) => acc.status === "Active")
+                          .every((acc) => selectedAccountIds.includes(acc.id))
+                      }
+                      onChange={() => {
+                        const activeIds = accounts
+                          .filter((acc) => acc.status === "Active")
+                          .map((acc) => acc.id);
+                        setSelectedAccountIds(activeIds);
+                      }}
+                      style={{ accentColor: "#6C63FF" }}
+                    />
+                    Active Accounts
+                  </label>
+                  <div
+                    style={{ borderTop: "2px solid #f0f0f0", margin: "2px 0" }}
+                  />
                   {accounts.map((acc) => (
                     <label
                       key={acc.id}
@@ -918,12 +977,10 @@ function Topbar({ collapsed, trades = [], onFilterChange }) {
                         onChange={() => {
                           let newIds;
                           if (selectedAccountIds.includes(acc.id)) {
-                            // Remove this account
                             newIds = selectedAccountIds.filter(
                               (id) => id !== acc.id
                             );
                           } else {
-                            // Add this account
                             newIds = [...selectedAccountIds, acc.id];
                           }
                           // If none selected, revert to All Accounts

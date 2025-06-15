@@ -28,6 +28,7 @@ import {
   FaHeading,
   FaParagraph,
 } from "react-icons/fa";
+import "./notes.css";
 
 // Function to store notes in Firestore
 export const storeNotes = async (userId, tradeId, notes) => {
@@ -355,6 +356,29 @@ export function NotesModal({
                 },
                 "& .ProseMirror p": {
                   margin: "0.5em 0",
+                },
+                "& .ProseMirror ul[data-type='taskList'], & .ProseMirror ul[data-type='taskList'] li":
+                  {
+                    listStyle: "none !important",
+                    paddingLeft: 0,
+                    marginLeft: 0,
+                  },
+                "& .ProseMirror ul[data-type='taskList'] li": {
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5em",
+                  marginBottom: "0.2em",
+                },
+                "& .ProseMirror ul[data-type='taskList'] li > label": {
+                  margin: 0,
+                  userSelect: "none",
+                  display: "flex",
+                  alignItems: "center",
+                },
+                "& .ProseMirror ul[data-type='taskList'] li > div": {
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
                 },
               }}
             />

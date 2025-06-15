@@ -1,0 +1,40 @@
+/* notes.css */
+
+/* Task list styles */
+.ProseMirror ul[data-type="taskList"],
+.ProseMirror ul[data-type="taskList"] li {
+  list-style: none !important;
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+}
+
+.ProseMirror ul[data-type="taskList"] li {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.5em !important;
+  margin-bottom: 0.2em !important;
+  padding-left: 2em !important;
+}
+
+.ProseMirror ul[data-type="taskList"] li > label {
+  margin: 0 !important;
+  user-select: none !important;
+  display: flex !important;
+  align-items: center !important;
+  height: 100% !important;
+}
+
+.ProseMirror ul[data-type="taskList"] li input[type="checkbox"] {
+  vertical-align: middle !important;
+  width: 1.1em !important;
+  height: 1.1em !important;
+  margin-right: 0.5em !important;
+  position: relative !important;
+  top: 1px !important;
+}
+
+.ProseMirror ul[data-type="taskList"] li > div {
+  flex: 1 !important;
+  display: flex !important;
+  align-items: center !important;
+}

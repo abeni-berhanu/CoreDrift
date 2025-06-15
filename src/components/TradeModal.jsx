@@ -507,9 +507,17 @@ function TradeModal({
             id: doc.id,
             ...doc.data(),
             groupName: groupDoc.data().name,
+            groupOrder: groupDoc.data().order || 0,
           }))
         );
       }
+      // Sort rules by group order first, then by rule order
+      allRules.sort((a, b) => {
+        if (a.groupOrder !== b.groupOrder) {
+          return a.groupOrder - b.groupOrder;
+        }
+        return (a.order || 0) - (b.order || 0);
+      });
       setRules(allRules);
     } catch (err) {
       console.error("Error fetching rules:", err);

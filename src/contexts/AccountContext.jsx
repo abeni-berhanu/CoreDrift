@@ -73,8 +73,15 @@ export function AccountProvider({ children }) {
           fetchedAccountDocs.sort((a, b) => a.name.localeCompare(b.name));
           setAccounts(fetchedAccountDocs);
 
-          // Update selectedAccountIds: keep valid selections, remove invalid ones
+          // Set default selection to all active accounts if none selected
           setSelectedAccountIds((prevSelectedIds) => {
+            if (prevSelectedIds.length === 0) {
+              const activeIds = fetchedAccountDocs
+                .filter((acc) => acc.status === "Active")
+                .map((acc) => acc.id);
+              return activeIds;
+            }
+            // Update selectedAccountIds: keep valid selections, remove invalid ones
             const currentAccountIds = fetchedAccountDocs.map((acc) => acc.id);
             return prevSelectedIds.filter((id) =>
               currentAccountIds.includes(id)
